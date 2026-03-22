@@ -2,8 +2,9 @@
 
 Each wrapper delegates to the underlying MCP tool function, translating
 simple Python arguments into the Pydantic input models the MCP tools expect.
-These wrappers are used by the ``create_agent()``-based agent path so that
-the LLM can call tools via LangChain's standard tool-calling protocol.
+These wrappers are used by the LangGraph StateGraph agent (via
+model.bind_tools()) so the LLM can call tools via LangChain's standard
+tool-calling protocol.
 
 All tools are async, matching the async MCP tool implementations.
 """

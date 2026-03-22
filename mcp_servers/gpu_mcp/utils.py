@@ -1,222 +1,251 @@
-"""System resource helpers for Apple Silicon Macs.
+"""GPU utility layer — auto-adapts to the detected hardware.
 
-When INFRA_AGENT_MOCK_GPU=true (the default), provides real macOS system
-metrics from psutil — reframed as GPU-like device data for the dashboard.
-Since there are no NVIDIA GPUs on Apple Silicon, the four "devices" represent:
-  0: M4 Max Performance Cores
-  1: M4 Max Efficiency Cores
-  2: M4 Max 40-core GPU (unified memory)
-  3: M4 Max Neural Engine
+On NVIDIA systems: Uses pynvml for real GPU queries.
+On Apple Silicon: Uses psutil + system profiler for real system metrics.
+On systems with no GPU: Reports "no GPU available" (never fakes data).
+
+The public API (get_gpu_count, get_gpu_info, etc.) is consumed by all
+gpu_mcp tool modules. The implementation is chosen at import time based
+on platform_detect results.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import random
+import platform as _platform
 from dataclasses import dataclass
-
-import psutil
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-MOCK_MODE = os.getenv("INFRA_AGENT_MOCK_GPU", "true").lower() == "true"
 
-# Number of virtual "devices" exposed to the dashboard.
-_DEVICE_COUNT = 4
+# ---------------------------------------------------------------------------
+# Data containers
+# ---------------------------------------------------------------------------
 
 
 @dataclass
-class MockGpuInfo:
-    """GPU-like data container — backed by real psutil metrics on macOS."""
+class GpuInfo:
+    """Normalized GPU data — works for any backend."""
 
     name: str
     total_memory_mb: int
     temperature: int
     gpu_utilization: int
     memory_utilization: int
-    power_draw_w: int
-    power_limit_w: int
+    power_draw_w: float
+    power_limit_w: float
+    driver_version: str = ""
+    backend: str = "none"  # "nvml", "apple_metal", "none"
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers — real metric collection
+# Backend detection (runs once at import time)
+# ---------------------------------------------------------------------------
+
+_BACKEND: str = "none"
+_pynvml: Any = None
+
+# Try NVIDIA first
+try:
+    import pynvml as _pynvml_mod
+
+    _pynvml_mod.nvmlInit()
+    _count = _pynvml_mod.nvmlDeviceGetCount()
+    if _count > 0:
+        _pynvml = _pynvml_mod
+        _BACKEND = "nvml"
+        logger.info("GPU backend: NVIDIA (pynvml) — %d device(s)", _count)
+    else:
+        _pynvml_mod.nvmlShutdown()
+        logger.info("pynvml loaded but 0 devices found")
+except ImportError:
+    logger.debug("pynvml not installed")
+except Exception as exc:
+    logger.debug("pynvml init failed: %s", exc)
+
+# Try Apple Silicon if NVIDIA wasn't found
+_psutil: Any = None
+_IS_APPLE_SILICON = False
+
+if _BACKEND == "none" and _platform.system() == "Darwin" and _platform.machine() in ("arm64", "aarch64"):
+    try:
+        import psutil as _psutil_mod
+
+        _psutil = _psutil_mod
+        _BACKEND = "apple_metal"
+        _IS_APPLE_SILICON = True
+        logger.info("GPU backend: Apple Silicon (psutil-based metrics)")
+    except ImportError:
+        logger.debug("psutil not installed — Apple Silicon metrics unavailable")
+
+if _BACKEND == "none":
+    logger.info("GPU backend: none — no GPU hardware detected")
+
+
+# Expose for backward compatibility with existing tool modules
+pynvml = _pynvml
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA Backend
 # ---------------------------------------------------------------------------
 
 
-def _get_cpu_temp() -> int:
-    """Estimate CPU temperature from load.
+def _nvml_device_count() -> int:
+    return _pynvml.nvmlDeviceGetCount()
 
-    Real temperature requires ``sudo powermetrics`` on macOS, which is not
-    practical for a dashboard.  Instead, use a linear model:
-    idle ~35 C, full load ~85 C.
-    """
+
+def _nvml_gpu_info(index: int) -> GpuInfo:
+    handle = _pynvml.nvmlDeviceGetHandleByIndex(index)
+    name = _pynvml.nvmlDeviceGetName(handle)
+    if isinstance(name, bytes):
+        name = name.decode("utf-8")
+
+    mem = _pynvml.nvmlDeviceGetMemoryInfo(handle)
+    rates = _pynvml.nvmlDeviceGetUtilizationRates(handle)
+    temp = _pynvml.nvmlDeviceGetTemperature(handle, _pynvml.NVML_TEMPERATURE_GPU)
+    power_mw = _pynvml.nvmlDeviceGetPowerUsage(handle)
+    limit_mw = _pynvml.nvmlDeviceGetEnforcedPowerLimit(handle)
+
+    driver = _pynvml.nvmlSystemGetDriverVersion()
+    if isinstance(driver, bytes):
+        driver = driver.decode("utf-8")
+
+    total_mb = round(mem.total / (1024 * 1024))
+    used_pct = round(mem.used / mem.total * 100) if mem.total > 0 else 0
+
+    return GpuInfo(
+        name=name,
+        total_memory_mb=total_mb,
+        temperature=temp,
+        gpu_utilization=rates.gpu,
+        memory_utilization=used_pct,
+        power_draw_w=round(power_mw / 1000, 1),
+        power_limit_w=round(limit_mw / 1000, 1),
+        driver_version=driver,
+        backend="nvml",
+    )
+
+
+def _nvml_processes(index: int) -> list[dict[str, str | int]]:
+    handle = _pynvml.nvmlDeviceGetHandleByIndex(index)
+    procs: list[dict[str, str | int]] = []
     try:
-        cpu = psutil.cpu_percent(interval=0)
-    except Exception:
-        cpu = 20.0
-    return int(35 + (cpu / 100) * 50)
+        compute_procs = _pynvml.nvmlDeviceGetComputeRunningProcesses(handle)
+        for p in compute_procs:
+            procs.append({
+                "pid": p.pid,
+                "name": _get_process_name(p.pid),
+                "memory_mb": round(p.usedGpuMemory / (1024 * 1024)) if p.usedGpuMemory else 0,
+                "type": "Compute",
+            })
+    except Exception as exc:
+        logger.debug("Failed to list GPU processes for device %d: %s", index, exc)
+    return procs
 
 
-def _estimate_power() -> int:
-    """Estimate system power draw (watts) from CPU utilization.
-
-    M4 Max TDP is ~92 W.  Idle draws roughly 8-12 W.
-    """
+def _get_process_name(pid: int) -> str:
+    """Get process name from PID."""
     try:
-        cpu = psutil.cpu_percent(interval=0)
+        if _psutil:
+            return _psutil.Process(pid).name()
+        with open(f"/proc/{pid}/comm") as f:
+            return f.read().strip()
     except Exception:
-        cpu = 15.0
-    return max(8, int(10 + (cpu / 100) * 82))
+        return f"pid-{pid}"
 
 
-def _get_gpu_util() -> int:
-    """Estimate Apple GPU utilization.
+# ---------------------------------------------------------------------------
+# Apple Silicon Backend
+# ---------------------------------------------------------------------------
 
-    Checks for known GPU-heavy macOS processes (WindowServer,
-    MTLCompilerService) and uses their CPU share as a proxy.
-    Falls back to a small random baseline.
-    """
+
+def _apple_device_count() -> int:
+    return 1  # Single unified GPU
+
+
+def _apple_gpu_info(index: int) -> GpuInfo:
+    """Real Apple Silicon metrics via psutil."""
+    import subprocess
+
+    # Get chip name
+    chip_name = "Apple Silicon GPU"
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            chip_name = result.stdout.strip()
+    except Exception:
+        pass
+
+    # Real CPU/memory metrics
+    try:
+        cpu = _psutil.cpu_percent(interval=0.1)
+    except Exception:
+        cpu = 0.0
+
+    try:
+        mem = _psutil.virtual_memory()
+        total_mb = int(mem.total / 1024 / 1024)
+        mem_pct = int(mem.percent)
+    except Exception:
+        total_mb = 0
+        mem_pct = 0
+
+    # Estimate temperature from load (real temp requires sudo on macOS)
+    temp = int(35 + (cpu / 100) * 50)
+
+    # Estimate power from CPU load (M-series TDP varies)
+    power = max(5, int(8 + (cpu / 100) * 84))
+
+    # Estimate GPU utilization from GPU-heavy processes
+    gpu_util = _apple_gpu_utilization()
+
+    return GpuInfo(
+        name=chip_name,
+        total_memory_mb=total_mb,
+        temperature=temp,
+        gpu_utilization=gpu_util,
+        memory_utilization=mem_pct,
+        power_draw_w=float(power),
+        power_limit_w=92.0,  # Approximate M-series TDP
+        driver_version=f"macOS {_platform.mac_ver()[0]}",
+        backend="apple_metal",
+    )
+
+
+def _apple_gpu_utilization() -> int:
+    """Estimate GPU utilization from GPU-heavy macOS processes."""
     try:
         gpu_proc_names = {
-            "WindowServer", "MTLCompilerService",
-            "ollama_llama_server", "ollama", "Metal",
+            "WindowServer",
+            "MTLCompilerService",
+            "ollama_llama_server",
+            "ollama",
         }
-        total_gpu = 0
-        for proc in psutil.process_iter(["name", "cpu_percent"]):
+        total = 0
+        for proc in _psutil.process_iter(["name", "cpu_percent"]):
             info = proc.info
             if info and info.get("name") in gpu_proc_names:
                 cpu_pct = info.get("cpu_percent")
-                if cpu_pct is not None and cpu_pct > 0:
-                    total_gpu += cpu_pct
-        if total_gpu > 0:
-            return min(100, int(total_gpu))
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        pass
-    except Exception as exc:
-        logger.debug("_get_gpu_util failed: %s", exc)
-    return random.randint(3, 12)
-
-
-def _get_neural_util() -> int:
-    """Estimate Neural Engine utilization.
-
-    On macOS the Neural Engine is used by CoreML / ANE processes.
-    Ollama also uses Metal/ANE for inference on Apple Silicon.
-    """
-    try:
-        ane_names = {"ollama_llama_server", "ollama", "coremlcompiler"}
-        total = 0
-        for proc in psutil.process_iter(["name", "cpu_percent"]):
-            info = proc.info
-            if info and info.get("name") in ane_names:
-                cpu_pct = info.get("cpu_percent")
-                if cpu_pct is not None:
+                if cpu_pct and cpu_pct > 0:
                     total += cpu_pct
-        if total > 0:
-            return min(100, int(total * 0.3))  # ANE share ~30% of load
+        return min(100, int(total)) if total > 0 else 0
     except Exception:
-        pass
-    return random.randint(2, 10)
+        return 0
 
 
-# ---------------------------------------------------------------------------
-# Public API — used by tool modules (monitor, health, processes)
-# ---------------------------------------------------------------------------
-
-
-def get_mock_gpu_count() -> int:
-    """Return number of virtual devices (CPU perf, CPU eff, GPU, Neural Engine)."""
-    return _DEVICE_COUNT
-
-
-def get_mock_gpu_info(index: int) -> MockGpuInfo:
-    """Return real system metrics for a virtual Apple Silicon device.
-
-    Args:
-        index: Device index (0-3). Wraps with modulo.
-
-    Returns:
-        MockGpuInfo populated with live psutil data.
-    """
-    try:
-        cpu = psutil.cpu_percent(interval=0.1)
-    except Exception:
-        cpu = 15.0
-
-    try:
-        mem = psutil.virtual_memory()
-        total_mem_mb = int(mem.total / 1024 / 1024)
-        mem_pct = int(mem.percent)
-    except Exception:
-        total_mem_mb = 65536
-        mem_pct = 40
-
-    temp = _get_cpu_temp()
-    power = _estimate_power()
-
-    devices = [
-        MockGpuInfo(
-            name="Apple M4 Max \u2014 Performance Cores",
-            total_memory_mb=total_mem_mb,
-            temperature=temp,
-            gpu_utilization=max(0, min(100, int(cpu))),
-            memory_utilization=mem_pct,
-            power_draw_w=power,
-            power_limit_w=92,
-        ),
-        MockGpuInfo(
-            name="Apple M4 Max \u2014 Efficiency Cores",
-            total_memory_mb=total_mem_mb,
-            temperature=max(30, temp - 10),
-            gpu_utilization=max(0, min(100, int(cpu) - 15)),
-            memory_utilization=mem_pct,
-            power_draw_w=max(5, power // 3),
-            power_limit_w=30,
-        ),
-        MockGpuInfo(
-            name="Apple M4 Max \u2014 40-core GPU",
-            total_memory_mb=total_mem_mb,
-            temperature=min(100, temp + 2),
-            gpu_utilization=_get_gpu_util(),
-            memory_utilization=mem_pct,
-            power_draw_w=max(5, power // 2),
-            power_limit_w=60,
-        ),
-        MockGpuInfo(
-            name="Apple M4 Max \u2014 Neural Engine",
-            total_memory_mb=total_mem_mb,
-            temperature=max(30, temp - 5),
-            gpu_utilization=_get_neural_util(),
-            memory_utilization=mem_pct,
-            power_draw_w=max(3, power // 6),
-            power_limit_w=15,
-        ),
-    ]
-
-    return devices[index % len(devices)]
-
-
-def get_mock_processes(index: int) -> list[dict[str, str | int]]:
-    """Return real top processes sorted by CPU usage.
-
-    Args:
-        index: Device index.  All devices share the same host process
-               list; we return the top 5 for devices 0-2 and an empty
-               list for device 3 (Neural Engine has no visible procs).
-
-    Returns:
-        List of process dicts with pid, name, memory_mb, type.
-    """
-    # Neural Engine (index 3) — no user-visible processes
-    if index % _DEVICE_COUNT == 3:
-        return []
-
+def _apple_processes(index: int) -> list[dict[str, str | int]]:
+    """Top processes by CPU usage on macOS."""
     procs: list[dict[str, str | int]] = []
     try:
-        all_procs = list(
-            psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"])
-        )
+        all_procs = list(_psutil.process_iter(["pid", "name", "memory_info", "cpu_percent"]))
         sorted_procs = sorted(
             all_procs,
             key=lambda p: p.info.get("cpu_percent") or 0,
@@ -228,31 +257,74 @@ def get_mock_processes(index: int) -> list[dict[str, str | int]]:
                 continue
             mem_info = info.get("memory_info")
             rss = mem_info.rss if mem_info else 0
-            procs.append(
-                {
-                    "pid": info.get("pid", 0),
-                    "name": info.get("name", "unknown") or "unknown",
-                    "memory_mb": int(rss / 1024 / 1024),
-                    "type": "Compute",
-                }
-            )
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        pass
+            procs.append({
+                "pid": info.get("pid", 0),
+                "name": info.get("name", "unknown") or "unknown",
+                "memory_mb": int(rss / 1024 / 1024),
+                "type": "Compute",
+            })
     except Exception as exc:
-        logger.warning("get_mock_processes failed: %s", exc)
-
+        logger.debug("apple_processes failed: %s", exc)
     return procs
 
 
-def get_mock_health(index: int) -> dict[str, str | int | float | bool]:
-    """Return a health status dict for the given virtual device.
+# ---------------------------------------------------------------------------
+# Public API — backend-agnostic
+# ---------------------------------------------------------------------------
 
-    Evaluates temperature, utilization, and memory to determine status:
-    - "healthy": temp < 80 and util < 95%
-    - "warning": temp 80-90 or util >= 95%
-    - "critical": temp > 90
+
+def get_backend() -> str:
+    """Return the active GPU backend: 'nvml', 'apple_metal', or 'none'."""
+    return _BACKEND
+
+
+def get_gpu_count() -> int:
+    """Return the number of GPU devices available."""
+    if _BACKEND == "nvml":
+        return _nvml_device_count()
+    if _BACKEND == "apple_metal":
+        return _apple_device_count()
+    return 0
+
+
+def get_gpu_info(index: int) -> GpuInfo:
+    """Return live GPU metrics for the given device index.
+
+    Raises:
+        RuntimeError: If no GPU backend is available.
+        ValueError: If the device index is out of range.
     """
-    info = get_mock_gpu_info(index)
+    count = get_gpu_count()
+    if count == 0:
+        raise RuntimeError(
+            "No GPU hardware detected on this system. "
+            f"OS: {_platform.system()} {_platform.machine()}"
+        )
+    if index < 0 or index >= count:
+        raise ValueError(
+            f"Device index {index} out of range. "
+            f"Available devices: 0-{count - 1} ({count} total, backend={_BACKEND})"
+        )
+
+    if _BACKEND == "nvml":
+        return _nvml_gpu_info(index)
+    if _BACKEND == "apple_metal":
+        return _apple_gpu_info(index)
+    raise RuntimeError(f"Unknown backend: {_BACKEND}")
+
+
+def get_processes(index: int) -> list[dict[str, str | int]]:
+    """Return processes running on the given GPU device."""
+    if _BACKEND == "nvml":
+        return _nvml_processes(index)
+    if _BACKEND == "apple_metal":
+        return _apple_processes(index)
+    return []
+
+
+def get_health(index: int) -> dict[str, Any]:
+    """Return health status for the given GPU device."""
+    info = get_gpu_info(index)
 
     temp = info.temperature
     util = info.gpu_utilization
@@ -267,9 +339,10 @@ def get_mock_health(index: int) -> dict[str, str | int | float | bool]:
     else:
         status = "healthy"
 
-    return {
+    result: dict[str, Any] = {
         "device_index": index,
         "name": info.name,
+        "backend": info.backend,
         "status": status,
         "temperature_c": temp,
         "gpu_utilization_pct": util,
@@ -280,5 +353,47 @@ def get_mock_health(index: int) -> dict[str, str | int | float | bool]:
         "power_draw_w": info.power_draw_w,
         "power_limit_w": info.power_limit_w,
         "throttle_warning": temp > 85,
-        "ecc_errors": 0,
     }
+
+    # Add ECC info for NVIDIA GPUs
+    if _BACKEND == "nvml":
+        try:
+            handle = _pynvml.nvmlDeviceGetHandleByIndex(index)
+            ecc_mode = _pynvml.nvmlDeviceGetCurrentEccMode(handle)
+            result["ecc_enabled"] = bool(ecc_mode)
+            if ecc_mode:
+                sbe = _pynvml.nvmlDeviceGetTotalEccErrors(
+                    handle,
+                    _pynvml.NVML_SINGLE_BIT_ECC,
+                    _pynvml.NVML_VOLATILE_ECC,
+                )
+                dbe = _pynvml.nvmlDeviceGetTotalEccErrors(
+                    handle,
+                    _pynvml.NVML_DOUBLE_BIT_ECC,
+                    _pynvml.NVML_VOLATILE_ECC,
+                )
+                result["ecc_sbe_volatile"] = sbe
+                result["ecc_dbe_volatile"] = dbe
+        except Exception:
+            result["ecc_enabled"] = False
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility aliases (for existing code that imports these)
+# ---------------------------------------------------------------------------
+
+# These match the old API so monitor.py, health.py, processes.py
+# continue to work without modification during migration.
+MOCK_MODE = False  # No longer used — kept for import compatibility
+get_mock_gpu_count = get_gpu_count
+get_mock_gpu_info = get_gpu_info
+get_mock_processes = get_processes
+get_mock_health = get_health
+
+
+class MockGpuInfo(GpuInfo):
+    """Backward-compatible alias for GpuInfo."""
+
+    pass

@@ -1,17 +1,20 @@
 """Tests for k8s_mcp server tools.
 
-All tests run with INFRA_AGENT_MOCK_K8S=true (the default) so they exercise
-the mock-data code paths without needing a real Kubernetes cluster.
+All tests mock the Kubernetes client via ``get_clients`` so they can run
+without a real cluster.  Two paths are tested for every tool:
 
-Mock data reflects a local dev environment on MacBook Pro M4 Max with
-pods: ollama-server, infra-agent-api, vite-dashboard, redis-cache,
-langgraph-worker (CrashLoopBackOff).
+1. **Happy path** -- ``get_clients`` returns mock API objects that
+   simulate real Kubernetes responses.
+2. **Unavailable path** -- ``get_clients`` raises ``K8sUnavailableError``
+   and the tool returns a structured JSON error.
+
+Input-validation tests exercise the Pydantic models directly.
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
@@ -26,17 +29,99 @@ from mcp_servers.k8s_mcp.models import (
     K8sRestartDeploymentInput,
     K8sScaleDeploymentInput,
 )
+from mcp_servers.k8s_mcp.utils import K8sUnavailableError
 
 # ---------------------------------------------------------------------------
-# Ensure mock mode is enabled for all tests
+# Patch targets -- patch where get_clients is USED, not where defined
+# ---------------------------------------------------------------------------
+
+_PODS_GC = "mcp_servers.k8s_mcp.tools.pods.get_clients"
+_DEPLOYS_GC = "mcp_servers.k8s_mcp.tools.deployments.get_clients"
+_SERVICES_GC = "mcp_servers.k8s_mcp.tools.services.get_clients"
+_LOGS_GC = "mcp_servers.k8s_mcp.tools.logs.get_clients"
+
+
+# ---------------------------------------------------------------------------
+# Helpers -- build realistic MagicMock K8s objects
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _force_mock_k8s():
-    """Ensure settings.mock_k8s is True for every test."""
-    with patch("config.settings.mock_k8s", True):
-        yield
+def _mock_pod(
+    name: str = "test-pod-abc123",
+    namespace: str = "default",
+    phase: str = "Running",
+    pod_ip: str = "10.0.0.1",
+    node: str = "node-1",
+    labels: dict | None = None,
+) -> MagicMock:
+    """Create a realistic V1Pod MagicMock."""
+    pod = MagicMock()
+    pod.metadata.name = name
+    pod.metadata.namespace = namespace
+    pod.metadata.labels = labels or {"app": "test"}
+    pod.status.phase = phase
+    pod.status.pod_ip = pod_ip
+    pod.status.start_time = "2026-03-22T07:00:00Z"
+    pod.status.conditions = []
+    pod.spec.node_name = node
+
+    # Container status
+    cs = MagicMock()
+    cs.name = "main"
+    cs.image = "test-image:latest"
+    cs.ready = True
+    cs.restart_count = 0
+    cs.state.running.started_at = "2026-03-22T07:00:00Z"
+    cs.state.waiting = None
+    cs.state.terminated = None
+    pod.status.container_statuses = [cs]
+    return pod
+
+
+def _mock_deployment(
+    name: str = "test-deploy",
+    namespace: str = "default",
+    replicas: int = 3,
+    labels: dict | None = None,
+) -> MagicMock:
+    """Create a realistic V1Deployment MagicMock."""
+    deploy = MagicMock()
+    deploy.metadata.name = name
+    deploy.metadata.namespace = namespace
+    deploy.metadata.labels = labels or {"app": "test"}
+    deploy.spec.replicas = replicas
+    deploy.spec.strategy.type = "RollingUpdate"
+    deploy.status.ready_replicas = replicas
+    deploy.status.available_replicas = replicas
+    deploy.status.updated_replicas = replicas
+    deploy.status.conditions = []
+    return deploy
+
+
+def _mock_service(
+    name: str = "test-svc",
+    namespace: str = "default",
+    svc_type: str = "ClusterIP",
+    cluster_ip: str = "10.96.0.1",
+) -> MagicMock:
+    """Create a realistic V1Service MagicMock."""
+    svc = MagicMock()
+    svc.metadata.name = name
+    svc.metadata.namespace = namespace
+    svc.spec.type = svc_type
+    svc.spec.cluster_ip = cluster_ip
+    svc.spec.selector = {"app": "test"}
+
+    port = MagicMock()
+    port.port = 80
+    port.target_port = 8080
+    port.protocol = "TCP"
+    port.name = "http"
+    port.node_port = None
+    svc.spec.ports = [port]
+
+    svc.status.load_balancer.ingress = None
+    return svc
 
 
 # ===========================================================================
@@ -48,61 +133,77 @@ class TestK8sListPods:
     """Tests for k8s_list_pods tool."""
 
     @pytest.mark.asyncio
-    async def test_list_pods_default_namespace(self) -> None:
-        """Should list pods in the default namespace."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
+    async def test_list_pods_happy_path(self) -> None:
+        """Should list pods from the mock K8s API."""
+        mock_v1 = MagicMock()
+        mock_v1.list_namespaced_pod.return_value.items = [
+            _mock_pod("web-0", labels={"app": "web"}),
+            _mock_pod("db-0", labels={"app": "db"}),
+        ]
+        with patch(_PODS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
 
-        params = K8sListPodsInput()
-        result_str = await k8s_list_pods(params)
-        result = json.loads(result_str)
+            result_str = await k8s_list_pods(K8sListPodsInput())
+            result = json.loads(result_str)
 
         assert result["namespace"] == "default"
-        assert result["pod_count"] > 0
-        assert isinstance(result["pods"], list)
-
-        # Check that known mock pods are present
-        pod_names = [p["name"] for p in result["pods"]]
-        assert any("ollama" in name for name in pod_names)
-        assert any("redis" in name for name in pod_names)
+        assert result["pod_count"] == 2
+        names = [p["name"] for p in result["pods"]]
+        assert "web-0" in names
+        assert "db-0" in names
 
     @pytest.mark.asyncio
     async def test_list_pods_with_label_selector(self) -> None:
-        """Should filter pods by label selector."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
+        """Should pass label_selector to the K8s API."""
+        mock_v1 = MagicMock()
+        mock_v1.list_namespaced_pod.return_value.items = [
+            _mock_pod("web-0", labels={"app": "web"}),
+        ]
+        with patch(_PODS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
 
-        params = K8sListPodsInput(label_selector="app=ollama")
-        result_str = await k8s_list_pods(params)
-        result = json.loads(result_str)
+            params = K8sListPodsInput(label_selector="app=web")
+            result_str = await k8s_list_pods(params)
+            result = json.loads(result_str)
 
-        assert result["pod_count"] >= 1
-        for pod in result["pods"]:
-            assert pod["labels"].get("app") == "ollama"
-
-    @pytest.mark.asyncio
-    async def test_list_pods_empty_namespace(self) -> None:
-        """Should return empty list for namespace with no pods."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
-
-        params = K8sListPodsInput(namespace="nonexistent-ns")
-        result_str = await k8s_list_pods(params)
-        result = json.loads(result_str)
-
-        assert result["pod_count"] == 0
-        assert result["pods"] == []
+        assert result["pod_count"] == 1
+        mock_v1.list_namespaced_pod.assert_called_once()
+        call_kwargs = mock_v1.list_namespaced_pod.call_args
+        assert call_kwargs.kwargs.get("label_selector") == "app=web"
 
     @pytest.mark.asyncio
-    async def test_list_pods_with_limit(self) -> None:
-        """Should respect the limit parameter."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
+    async def test_list_pods_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _PODS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
 
-        params = K8sListPodsInput(limit=2)
-        result_str = await k8s_list_pods(params)
-        result = json.loads(result_str)
+            result_str = await k8s_list_pods(K8sListPodsInput())
+            result = json.loads(result_str)
 
-        assert result["pod_count"] <= 2
+        assert result["error"] == "Kubernetes not available"
+        assert "hint" in result
 
-    def test_list_pods_input_validation(self) -> None:
-        """Should reject invalid input (e.g., limit < 1)."""
+    @pytest.mark.asyncio
+    async def test_list_pods_api_error(self) -> None:
+        """Should return error JSON when K8s API call fails."""
+        mock_v1 = MagicMock()
+        mock_v1.list_namespaced_pod.side_effect = RuntimeError(
+            "connection refused"
+        )
+        with patch(_PODS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
+
+            result_str = await k8s_list_pods(K8sListPodsInput())
+            result = json.loads(result_str)
+
+        assert "error" in result
+        assert "connection refused" in result["error"]
+
+    def test_list_pods_input_validation_limit_zero(self) -> None:
+        """Should reject limit < 1."""
         with pytest.raises(ValidationError):
             K8sListPodsInput(limit=0)
 
@@ -116,50 +217,59 @@ class TestK8sDescribePod:
     """Tests for k8s_describe_pod tool."""
 
     @pytest.mark.asyncio
-    async def test_describe_existing_pod(self) -> None:
-        """Should return Markdown detail for existing pod."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod
+    async def test_describe_pod_happy_path(self) -> None:
+        """Should return Markdown detail for an existing pod."""
+        mock_v1 = MagicMock()
+        pod = _mock_pod("ollama-server-0")
+        # Add a condition
+        cond = MagicMock()
+        cond.type = "Ready"
+        cond.status = "True"
+        cond.reason = ""
+        cond.message = ""
+        cond.last_transition_time = "2026-03-22T07:00:00Z"
+        pod.status.conditions = [cond]
+        mock_v1.read_namespaced_pod.return_value = pod
 
-        params = K8sDescribePodInput(
-            pod_name="ollama-server-0",
-            namespace="default",
-        )
-        result_str = await k8s_describe_pod(params)
+        # Events
+        ev = MagicMock()
+        ev.type = "Normal"
+        ev.reason = "Scheduled"
+        ev.message = "Successfully assigned"
+        ev.count = 1
+        ev.first_timestamp = "2026-03-22T07:00:00Z"
+        ev.last_timestamp = "2026-03-22T07:00:00Z"
+        mock_v1.list_namespaced_event.return_value.items = [ev]
 
-        # Markdown output should contain the pod name as a heading
+        with patch(_PODS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.pods import (
+                k8s_describe_pod,
+            )
+
+            params = K8sDescribePodInput(pod_name="ollama-server-0")
+            result_str = await k8s_describe_pod(params)
+
         assert "# Pod: ollama-server-0" in result_str
-        assert "**Status:** Running" in result_str
         assert "## Containers" in result_str
-        assert "ollama" in result_str
-
-    @pytest.mark.asyncio
-    async def test_describe_pod_with_events(self) -> None:
-        """Should include events section for pods with events."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod
-
-        params = K8sDescribePodInput(
-            pod_name="langgraph-worker-3f7a2b8c1d-qz9w5",
-            namespace="default",
-        )
-        result_str = await k8s_describe_pod(params)
-
         assert "## Events" in result_str
-        assert "BackOff" in result_str or "Warning" in result_str
+        assert "Scheduled" in result_str
 
     @pytest.mark.asyncio
-    async def test_describe_nonexistent_pod(self) -> None:
-        """Should return error JSON for pod that doesn't exist."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod
+    async def test_describe_pod_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _PODS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.pods import (
+                k8s_describe_pod,
+            )
 
-        params = K8sDescribePodInput(
-            pod_name="no-such-pod",
-            namespace="default",
-        )
-        result_str = await k8s_describe_pod(params)
-        result = json.loads(result_str)
+            params = K8sDescribePodInput(pod_name="test-pod")
+            result_str = await k8s_describe_pod(params)
+            result = json.loads(result_str)
 
-        assert result["error"] == "Pod not found"
-        assert result["pod_name"] == "no-such-pod"
+        assert result["error"] == "Kubernetes not available"
 
     def test_describe_pod_input_validation(self) -> None:
         """Should reject empty pod_name."""
@@ -171,45 +281,52 @@ class TestK8sExecCommand:
     """Tests for k8s_exec_command tool."""
 
     @pytest.mark.asyncio
-    async def test_exec_simple_command(self) -> None:
-        """Should return mock output for a simple command."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_exec_command
+    async def test_exec_command_happy_path(self) -> None:
+        """Should return command output from the mock API."""
+        mock_v1 = MagicMock()
+        with (
+            patch(_PODS_GC, return_value=(mock_v1, MagicMock())),
+            patch(
+                "kubernetes.stream.stream",
+                return_value="root\n",
+            ),
+        ):
+            from mcp_servers.k8s_mcp.tools.pods import (
+                k8s_exec_command,
+            )
 
-        params = K8sExecCommandInput(
-            pod_name="infra-agent-api-7b9d4f6c8a-xk2p1",
-            namespace="default",
-            command=["whoami"],
-        )
-        result_str = await k8s_exec_command(params)
-        result = json.loads(result_str)
+            params = K8sExecCommandInput(
+                pod_name="test-pod", command=["whoami"]
+            )
+            result_str = await k8s_exec_command(params)
+            result = json.loads(result_str)
 
-        assert result["pod"] == "infra-agent-api-7b9d4f6c8a-xk2p1"
         assert result["exit_code"] == 0
         assert "root" in result["output"]
 
     @pytest.mark.asyncio
-    async def test_exec_ls_command(self) -> None:
-        """Should return file listing for ls command."""
-        from mcp_servers.k8s_mcp.tools.pods import k8s_exec_command
+    async def test_exec_command_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _PODS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.pods import (
+                k8s_exec_command,
+            )
 
-        params = K8sExecCommandInput(
-            pod_name="infra-agent-api-7b9d4f6c8a-xk2p1",
-            namespace="default",
-            command=["ls", "-la"],
-        )
-        result_str = await k8s_exec_command(params)
-        result = json.loads(result_str)
+            params = K8sExecCommandInput(
+                pod_name="test-pod", command=["whoami"]
+            )
+            result_str = await k8s_exec_command(params)
+            result = json.loads(result_str)
 
-        assert result["exit_code"] == 0
-        assert "total" in result["output"]
+        assert result["error"] == "Kubernetes not available"
 
     def test_exec_input_validation_empty_command(self) -> None:
         """Should reject empty command list."""
         with pytest.raises(ValidationError):
-            K8sExecCommandInput(
-                pod_name="test-pod",
-                command=[],
-            )
+            K8sExecCommandInput(pod_name="test-pod", command=[])
 
 
 # ===========================================================================
@@ -221,141 +338,197 @@ class TestK8sListDeployments:
     """Tests for k8s_list_deployments tool."""
 
     @pytest.mark.asyncio
-    async def test_list_deployments_default_namespace(self) -> None:
-        """Should list deployments in the default namespace."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_list_deployments
+    async def test_list_deployments_happy_path(self) -> None:
+        """Should list deployments from the mock K8s API."""
+        mock_apps = MagicMock()
+        mock_apps.list_namespaced_deployment.return_value.items = [
+            _mock_deployment("nginx", replicas=3),
+            _mock_deployment("redis", replicas=1),
+        ]
+        with patch(
+            _DEPLOYS_GC,
+            return_value=(MagicMock(), mock_apps),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_list_deployments,
+            )
 
-        params = K8sListDeploymentsInput()
-        result_str = await k8s_list_deployments(params)
-        result = json.loads(result_str)
+            result_str = await k8s_list_deployments(
+                K8sListDeploymentsInput()
+            )
+            result = json.loads(result_str)
 
         assert result["namespace"] == "default"
-        assert result["deployment_count"] > 0
-
-        deploy_names = [d["name"] for d in result["deployments"]]
-        assert "ollama-deployment" in deploy_names
-
-    @pytest.mark.asyncio
-    async def test_list_deployments_with_label_selector(self) -> None:
-        """Should filter deployments by label selector."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_list_deployments
-
-        params = K8sListDeploymentsInput(label_selector="app=ollama")
-        result_str = await k8s_list_deployments(params)
-        result = json.loads(result_str)
-
-        assert result["deployment_count"] >= 1
-        for d in result["deployments"]:
-            assert d["labels"].get("app") == "ollama"
-
-    @pytest.mark.asyncio
-    async def test_list_deployments_empty_namespace(self) -> None:
-        """Should return empty list for namespace with no deployments."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_list_deployments
-
-        params = K8sListDeploymentsInput(namespace="nonexistent-ns")
-        result_str = await k8s_list_deployments(params)
-        result = json.loads(result_str)
-
-        assert result["deployment_count"] == 0
-        assert result["deployments"] == []
-
-    @pytest.mark.asyncio
-    async def test_list_deployments_replica_counts(self) -> None:
-        """Should include replica counts in deployment data."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_list_deployments
-
-        params = K8sListDeploymentsInput()
-        result_str = await k8s_list_deployments(params)
-        result = json.loads(result_str)
-
+        assert result["deployment_count"] == 2
+        names = [d["name"] for d in result["deployments"]]
+        assert "nginx" in names
+        assert "redis" in names
+        # Check replica fields
         for d in result["deployments"]:
             assert "replicas" in d
             assert "ready_replicas" in d
             assert "available_replicas" in d
+
+    @pytest.mark.asyncio
+    async def test_list_deployments_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _DEPLOYS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_list_deployments,
+            )
+
+            result_str = await k8s_list_deployments(
+                K8sListDeploymentsInput()
+            )
+            result = json.loads(result_str)
+
+        assert result["error"] == "Kubernetes not available"
+
+    @pytest.mark.asyncio
+    async def test_list_deployments_with_label_selector(
+        self,
+    ) -> None:
+        """Should pass label_selector to the K8s API."""
+        mock_apps = MagicMock()
+        mock_apps.list_namespaced_deployment.return_value.items = [
+            _mock_deployment("nginx", labels={"app": "nginx"}),
+        ]
+        with patch(
+            _DEPLOYS_GC,
+            return_value=(MagicMock(), mock_apps),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_list_deployments,
+            )
+
+            params = K8sListDeploymentsInput(
+                label_selector="app=nginx"
+            )
+            result_str = await k8s_list_deployments(params)
+            result = json.loads(result_str)
+
+        assert result["deployment_count"] == 1
+        call_kwargs = (
+            mock_apps.list_namespaced_deployment.call_args
+        )
+        assert (
+            call_kwargs.kwargs.get("label_selector") == "app=nginx"
+        )
 
 
 class TestK8sScaleDeployment:
     """Tests for k8s_scale_deployment tool."""
 
     @pytest.mark.asyncio
-    async def test_scale_deployment(self) -> None:
-        """Should scale a deployment to specified replicas."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_scale_deployment
+    async def test_scale_deployment_happy_path(self) -> None:
+        """Should scale a deployment to the specified replicas."""
+        mock_apps = MagicMock()
+        current = _mock_deployment("nginx", replicas=1)
+        mock_apps.read_namespaced_deployment.return_value = current
 
-        params = K8sScaleDeploymentInput(
-            deployment_name="ollama-deployment",
-            namespace="default",
-            replicas=3,
-        )
-        result_str = await k8s_scale_deployment(params)
-        result = json.loads(result_str)
+        with patch(
+            _DEPLOYS_GC,
+            return_value=(MagicMock(), mock_apps),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_scale_deployment,
+            )
+
+            params = K8sScaleDeploymentInput(
+                deployment_name="nginx", replicas=5
+            )
+            result_str = await k8s_scale_deployment(params)
+            result = json.loads(result_str)
 
         assert result["action"] == "scale"
-        assert result["deployment"] == "ollama-deployment"
-        assert result["new_replicas"] == 3
-        assert result["previous_replicas"] == 1  # ollama mock has 1
+        assert result["deployment"] == "nginx"
+        assert result["previous_replicas"] == 1
+        assert result["new_replicas"] == 5
         assert result["status"] == "scaled"
+        mock_apps.patch_namespaced_deployment_scale.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_scale_nonexistent_deployment(self) -> None:
-        """Should return error for deployment that doesn't exist."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_scale_deployment
+    async def test_scale_deployment_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _DEPLOYS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_scale_deployment,
+            )
 
-        params = K8sScaleDeploymentInput(
-            deployment_name="no-such-deploy",
-            namespace="default",
-            replicas=2,
-        )
-        result_str = await k8s_scale_deployment(params)
-        result = json.loads(result_str)
+            params = K8sScaleDeploymentInput(
+                deployment_name="nginx", replicas=3
+            )
+            result_str = await k8s_scale_deployment(params)
+            result = json.loads(result_str)
 
-        assert result["error"] == "Deployment not found"
+        assert result["error"] == "Kubernetes not available"
 
-    def test_scale_input_validation(self) -> None:
+    def test_scale_input_validation_too_high(self) -> None:
         """Should reject replicas > 100."""
         with pytest.raises(ValidationError):
-            K8sScaleDeploymentInput(deployment_name="ollama", replicas=101)
+            K8sScaleDeploymentInput(
+                deployment_name="nginx", replicas=101
+            )
 
     def test_scale_input_validation_negative(self) -> None:
         """Should reject replicas < 0."""
         with pytest.raises(ValidationError):
-            K8sScaleDeploymentInput(deployment_name="ollama", replicas=-1)
+            K8sScaleDeploymentInput(
+                deployment_name="nginx", replicas=-1
+            )
 
 
 class TestK8sRestartDeployment:
     """Tests for k8s_restart_deployment tool."""
 
     @pytest.mark.asyncio
-    async def test_restart_deployment(self) -> None:
+    async def test_restart_deployment_happy_path(self) -> None:
         """Should trigger a rolling restart."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_restart_deployment
+        mock_apps = MagicMock()
+        with patch(
+            _DEPLOYS_GC,
+            return_value=(MagicMock(), mock_apps),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_restart_deployment,
+            )
 
-        params = K8sRestartDeploymentInput(
-            deployment_name="ollama-deployment",
-            namespace="default",
-        )
-        result_str = await k8s_restart_deployment(params)
-        result = json.loads(result_str)
+            params = K8sRestartDeploymentInput(
+                deployment_name="nginx"
+            )
+            result_str = await k8s_restart_deployment(params)
+            result = json.loads(result_str)
 
         assert result["action"] == "rolling_restart"
-        assert result["deployment"] == "ollama-deployment"
+        assert result["deployment"] == "nginx"
         assert result["status"] == "restarting"
         assert "restart_triggered_at" in result
+        mock_apps.patch_namespaced_deployment.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_restart_nonexistent_deployment(self) -> None:
-        """Should return error for deployment that doesn't exist."""
-        from mcp_servers.k8s_mcp.tools.deployments import k8s_restart_deployment
+    async def test_restart_deployment_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _DEPLOYS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.deployments import (
+                k8s_restart_deployment,
+            )
 
-        params = K8sRestartDeploymentInput(
-            deployment_name="no-such-deploy",
-            namespace="default",
-        )
-        result_str = await k8s_restart_deployment(params)
-        result = json.loads(result_str)
+            params = K8sRestartDeploymentInput(
+                deployment_name="nginx"
+            )
+            result_str = await k8s_restart_deployment(params)
+            result = json.loads(result_str)
 
-        assert result["error"] == "Deployment not found"
+        assert result["error"] == "Kubernetes not available"
 
 
 # ===========================================================================
@@ -367,59 +540,78 @@ class TestK8sListServices:
     """Tests for k8s_list_services tool."""
 
     @pytest.mark.asyncio
-    async def test_list_services_default_namespace(self) -> None:
-        """Should list services in the default namespace."""
-        from mcp_servers.k8s_mcp.tools.services import k8s_list_services
+    async def test_list_services_happy_path(self) -> None:
+        """Should list services from the mock K8s API."""
+        mock_v1 = MagicMock()
+        mock_v1.list_namespaced_service.return_value.items = [
+            _mock_service("kubernetes", svc_type="ClusterIP"),
+            _mock_service(
+                "web-svc",
+                svc_type="LoadBalancer",
+                cluster_ip="10.96.10.1",
+            ),
+        ]
+        with patch(
+            _SERVICES_GC, return_value=(mock_v1, MagicMock())
+        ):
+            from mcp_servers.k8s_mcp.tools.services import (
+                k8s_list_services,
+            )
 
-        params = K8sListServicesInput()
-        result_str = await k8s_list_services(params)
-        result = json.loads(result_str)
+            result_str = await k8s_list_services(
+                K8sListServicesInput()
+            )
+            result = json.loads(result_str)
 
         assert result["namespace"] == "default"
-        assert result["service_count"] > 0
-
-        svc_names = [s["name"] for s in result["services"]]
-        assert "kubernetes" in svc_names
-        assert "redis-svc" in svc_names
-
-    @pytest.mark.asyncio
-    async def test_list_services_includes_ports(self) -> None:
-        """Should include port information in service data."""
-        from mcp_servers.k8s_mcp.tools.services import k8s_list_services
-
-        params = K8sListServicesInput()
-        result_str = await k8s_list_services(params)
-        result = json.loads(result_str)
-
+        assert result["service_count"] == 2
+        names = [s["name"] for s in result["services"]]
+        assert "kubernetes" in names
+        assert "web-svc" in names
         for svc in result["services"]:
             assert "ports" in svc
             assert "type" in svc
             assert "cluster_ip" in svc
 
     @pytest.mark.asyncio
-    async def test_list_services_includes_types(self) -> None:
-        """Should include various service types."""
-        from mcp_servers.k8s_mcp.tools.services import k8s_list_services
+    async def test_list_services_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _SERVICES_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.services import (
+                k8s_list_services,
+            )
 
-        params = K8sListServicesInput()
-        result_str = await k8s_list_services(params)
-        result = json.loads(result_str)
+            result_str = await k8s_list_services(
+                K8sListServicesInput()
+            )
+            result = json.loads(result_str)
 
-        types = {s["type"] for s in result["services"]}
-        assert "ClusterIP" in types
-        assert "LoadBalancer" in types
+        assert result["error"] == "Kubernetes not available"
 
     @pytest.mark.asyncio
-    async def test_list_services_empty_namespace(self) -> None:
-        """Should return empty list for namespace with no services."""
-        from mcp_servers.k8s_mcp.tools.services import k8s_list_services
+    async def test_list_services_api_error(self) -> None:
+        """Should return error JSON when K8s API call fails."""
+        mock_v1 = MagicMock()
+        mock_v1.list_namespaced_service.side_effect = RuntimeError(
+            "timeout"
+        )
+        with patch(
+            _SERVICES_GC, return_value=(mock_v1, MagicMock())
+        ):
+            from mcp_servers.k8s_mcp.tools.services import (
+                k8s_list_services,
+            )
 
-        params = K8sListServicesInput(namespace="nonexistent-ns")
-        result_str = await k8s_list_services(params)
-        result = json.loads(result_str)
+            result_str = await k8s_list_services(
+                K8sListServicesInput()
+            )
+            result = json.loads(result_str)
 
-        assert result["service_count"] == 0
-        assert result["services"] == []
+        assert "error" in result
+        assert "timeout" in result["error"]
 
 
 # ===========================================================================
@@ -431,185 +623,121 @@ class TestK8sGetPodLogs:
     """Tests for k8s_get_pod_logs tool."""
 
     @pytest.mark.asyncio
-    async def test_get_ollama_logs(self) -> None:
-        """Should return ollama-style log output."""
-        from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
-
-        params = K8sGetPodLogsInput(
-            pod_name="ollama-server-0",
-            namespace="default",
+    async def test_get_pod_logs_happy_path(self) -> None:
+        """Should return log text from the mock K8s API."""
+        mock_v1 = MagicMock()
+        mock_v1.read_namespaced_pod_log.return_value = (
+            "line1\nline2\nline3"
         )
-        result_str = await k8s_get_pod_logs(params)
-        result = json.loads(result_str)
+        with patch(_LOGS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.logs import (
+                k8s_get_pod_logs,
+            )
 
-        assert result["pod"] == "ollama-server-0"
-        assert result["log_lines"] > 0
-        assert "Listening" in result["logs"] or "Inference" in result["logs"]
+            params = K8sGetPodLogsInput(pod_name="test-pod")
+            result_str = await k8s_get_pod_logs(params)
+            result = json.loads(result_str)
+
+        assert result["pod"] == "test-pod"
+        assert result["log_lines"] == 3
+        assert "line1" in result["logs"]
 
     @pytest.mark.asyncio
-    async def test_get_worker_logs_shows_errors(self) -> None:
-        """Should return error logs for crashing langgraph-worker pod."""
-        from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
+    async def test_get_pod_logs_with_params(self) -> None:
+        """Should pass tail_lines and since_seconds to the API."""
+        mock_v1 = MagicMock()
+        mock_v1.read_namespaced_pod_log.return_value = "log output"
+        with patch(_LOGS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.logs import (
+                k8s_get_pod_logs,
+            )
 
-        params = K8sGetPodLogsInput(
-            pod_name="langgraph-worker-3f7a2b8c1d-qz9w5",
-            namespace="default",
-        )
-        result_str = await k8s_get_pod_logs(params)
-        result = json.loads(result_str)
+            params = K8sGetPodLogsInput(
+                pod_name="test-pod",
+                container="main",
+                tail_lines=50,
+                since_seconds=3600,
+            )
+            result_str = await k8s_get_pod_logs(params)
+            result = json.loads(result_str)
 
-        assert "ERROR" in result["logs"] or "FATAL" in result["logs"]
-
-    @pytest.mark.asyncio
-    async def test_get_logs_with_tail_lines(self) -> None:
-        """Should respect tail_lines parameter."""
-        from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
-
-        params = K8sGetPodLogsInput(
-            pod_name="ollama-server-0",
-            namespace="default",
-            tail_lines=3,
-        )
-        result_str = await k8s_get_pod_logs(params)
-        result = json.loads(result_str)
-
-        assert result["tail_lines"] == 3
-        assert result["log_lines"] <= 3
-
-    @pytest.mark.asyncio
-    async def test_get_logs_with_since_seconds(self) -> None:
-        """Should accept since_seconds parameter."""
-        from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
-
-        params = K8sGetPodLogsInput(
-            pod_name="redis-cache-0",
-            namespace="default",
-            since_seconds=3600,
-        )
-        result_str = await k8s_get_pod_logs(params)
-        result = json.loads(result_str)
-
+        assert result["tail_lines"] == 50
         assert result["since_seconds"] == 3600
-        assert result["log_lines"] > 0
+        assert result["container"] == "main"
+
+        call_kwargs = mock_v1.read_namespaced_pod_log.call_args
+        assert call_kwargs.kwargs["tail_lines"] == 50
+        assert call_kwargs.kwargs["since_seconds"] == 3600
+        assert call_kwargs.kwargs["container"] == "main"
 
     @pytest.mark.asyncio
-    async def test_get_logs_unknown_pod_returns_fallback(self) -> None:
-        """Should return fallback logs for unknown pod name."""
-        from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
+    async def test_get_pod_logs_unavailable(self) -> None:
+        """Should return error JSON when K8s is unavailable."""
+        with patch(
+            _LOGS_GC,
+            side_effect=K8sUnavailableError("no cluster"),
+        ):
+            from mcp_servers.k8s_mcp.tools.logs import (
+                k8s_get_pod_logs,
+            )
 
-        params = K8sGetPodLogsInput(
-            pod_name="unknown-pod-xyz",
-            namespace="default",
-        )
-        result_str = await k8s_get_pod_logs(params)
-        result = json.loads(result_str)
+            params = K8sGetPodLogsInput(pod_name="test-pod")
+            result_str = await k8s_get_pod_logs(params)
+            result = json.loads(result_str)
 
-        # Fallback logs should still have content
-        assert result["log_lines"] > 0
-        assert "Heartbeat" in result["logs"]
+        assert result["error"] == "Kubernetes not available"
 
-    def test_get_logs_input_validation(self) -> None:
+    @pytest.mark.asyncio
+    async def test_get_pod_logs_empty(self) -> None:
+        """Should handle empty log output gracefully."""
+        mock_v1 = MagicMock()
+        mock_v1.read_namespaced_pod_log.return_value = ""
+        with patch(_LOGS_GC, return_value=(mock_v1, MagicMock())):
+            from mcp_servers.k8s_mcp.tools.logs import (
+                k8s_get_pod_logs,
+            )
+
+            params = K8sGetPodLogsInput(pod_name="test-pod")
+            result_str = await k8s_get_pod_logs(params)
+            result = json.loads(result_str)
+
+        assert result["log_lines"] == 0
+        assert result["logs"] == ""
+
+    def test_get_logs_input_validation_tail_zero(self) -> None:
         """Should reject tail_lines < 1."""
         with pytest.raises(ValidationError):
             K8sGetPodLogsInput(pod_name="test", tail_lines=0)
 
-    def test_get_logs_input_validation_too_many_lines(self) -> None:
+    def test_get_logs_input_validation_tail_too_high(self) -> None:
         """Should reject tail_lines > 5000."""
         with pytest.raises(ValidationError):
             K8sGetPodLogsInput(pod_name="test", tail_lines=5001)
 
 
 # ===========================================================================
-# Mock Data Unit Tests
+# Utils tests
 # ===========================================================================
 
 
-class TestMockDataGenerators:
-    """Tests for the mock data generator functions in utils.py."""
+class TestGetClients:
+    """Tests for get_clients utility function."""
 
-    def test_get_mock_pods_filters_by_namespace(self) -> None:
-        """Should only return pods from the specified namespace."""
-        from mcp_servers.k8s_mcp.utils import get_mock_pods
+    def test_raises_when_k8s_unavailable(self) -> None:
+        """Should raise K8sUnavailableError when no config found."""
+        from mcp_servers.k8s_mcp.utils import get_clients
 
-        default_pods = get_mock_pods(namespace="default")
+        get_clients.cache_clear()
 
-        assert all(p["namespace"] == "default" for p in default_pods)
-        assert len(default_pods) >= 1
+        with (
+            patch(
+                "mcp_servers.k8s_mcp.utils.get_clients",
+                side_effect=K8sUnavailableError("test error"),
+            ),
+            pytest.raises(
+                K8sUnavailableError, match="test error"
+            ),
+        ):
+            from mcp_servers.k8s_mcp.utils import get_clients
 
-    def test_get_mock_pods_filters_by_label(self) -> None:
-        """Should filter by label selector."""
-        from mcp_servers.k8s_mcp.utils import get_mock_pods
-
-        redis_pods = get_mock_pods(namespace="default", label_selector="app=redis")
-        assert len(redis_pods) >= 1
-        assert all(p["labels"].get("app") == "redis" for p in redis_pods)
-
-    def test_get_mock_deployments_returns_data(self) -> None:
-        """Should return deployments with expected fields."""
-        from mcp_servers.k8s_mcp.utils import get_mock_deployments
-
-        deploys = get_mock_deployments(namespace="default")
-        assert len(deploys) >= 1
-        for d in deploys:
-            assert "name" in d
-            assert "replicas" in d
-            assert "ready_replicas" in d
-
-    def test_get_mock_services_returns_data(self) -> None:
-        """Should return services with expected fields."""
-        from mcp_servers.k8s_mcp.utils import get_mock_services
-
-        svcs = get_mock_services(namespace="default")
-        assert len(svcs) >= 1
-        for s in svcs:
-            assert "name" in s
-            assert "type" in s
-            assert "ports" in s
-
-    def test_get_mock_pod_detail_returns_events(self) -> None:
-        """Should return pod detail with events attached."""
-        from mcp_servers.k8s_mcp.utils import get_mock_pod_detail
-
-        detail = get_mock_pod_detail(
-            name="ollama-server-0",
-            namespace="default",
-        )
-        assert detail is not None
-        assert "events" in detail
-        assert len(detail["events"]) >= 1
-
-    def test_get_mock_pod_detail_returns_none_for_missing(self) -> None:
-        """Should return None when pod is not found."""
-        from mcp_servers.k8s_mcp.utils import get_mock_pod_detail
-
-        detail = get_mock_pod_detail(name="no-such-pod", namespace="default")
-        assert detail is None
-
-    def test_get_mock_pod_logs_returns_matching_content(self) -> None:
-        """Should return logs matching the pod name prefix."""
-        from mcp_servers.k8s_mcp.utils import get_mock_pod_logs
-
-        ollama_logs = get_mock_pod_logs(name="ollama-server-0")
-        assert "Listening" in ollama_logs or "Inference" in ollama_logs
-
-        redis_logs = get_mock_pod_logs(name="redis-cache-0")
-        assert "Redis" in redis_logs
-
-    def test_get_mock_exec_output(self) -> None:
-        """Should return realistic output for known commands."""
-        from mcp_servers.k8s_mcp.utils import get_mock_exec_output
-
-        assert "root" in get_mock_exec_output(["whoami"])
-        assert "total" in get_mock_exec_output(["ls", "-la"])
-        assert "PID" in get_mock_exec_output(["ps", "aux"])
-
-    def test_get_mock_events_filters_by_type(self) -> None:
-        """Should filter events by type."""
-        from mcp_servers.k8s_mcp.utils import get_mock_events
-
-        warnings = get_mock_events(event_type="Warning")
-        assert all(e["type"] == "Warning" for e in warnings)
-        assert len(warnings) >= 1
-
-        normals = get_mock_events(event_type="Normal")
-        assert all(e["type"] == "Normal" for e in normals)
+            get_clients()

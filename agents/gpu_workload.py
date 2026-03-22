@@ -6,11 +6,11 @@ Responsibilities:
 - Suggest workload rebalancing across GPUs
 - Report on cluster-wide GPU efficiency
 
-Primary path: Uses ``create_agent()`` with LangChain ``@tool``-decorated
-functions so the LLM can decide which tools to call.
+Primary path: Uses LangGraph StateGraph with model.bind_tools() for
+LLM-driven tool selection (modern LangGraph 1.0 pattern).
 
 Fallback path: If the LLM is unavailable (e.g. Ollama not running), falls
-back to the original keyword-based dispatch for deterministic operation.
+back to deterministic keyword-based dispatch.
 """
 
 from __future__ import annotations
@@ -21,10 +21,19 @@ import re
 from typing import Any
 
 from mcp_servers.gpu_mcp.models import (
+    DcgmFieldGroupInput,
+    DcgmXidErrorsInput,
     GpuClusterSummaryInput,
     GpuDeviceIndexInput,
     GpuHealthCheckInput,
     GpuListDevicesInput,
+    NcclProfileInput,
+    NvlinkTopologyInput,
+)
+from mcp_servers.gpu_mcp.tools.dcgm import (
+    gpu_dcgm_cluster_health,
+    gpu_dcgm_field_group,
+    gpu_dcgm_xid_errors,
 )
 from mcp_servers.gpu_mcp.tools.health import gpu_health_check
 from mcp_servers.gpu_mcp.tools.monitor import (
@@ -34,18 +43,22 @@ from mcp_servers.gpu_mcp.tools.monitor import (
     gpu_get_temperature,
     gpu_list_devices,
 )
+from mcp_servers.gpu_mcp.tools.nccl import gpu_nccl_profile
+from mcp_servers.gpu_mcp.tools.nvlink import gpu_nvlink_status, gpu_nvlink_topology
 from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
 logger = logging.getLogger(__name__)
 
-# System prompt for the LLM-powered create_agent path.
+# System prompt for the LLM-powered agent path (LangGraph StateGraph).
 GPU_SYSTEM_PROMPT: str = (
-    "You are a GPU workload monitoring specialist. "
-    "You have tools to check GPU devices, utilization, memory, temperature, "
-    "power, processes, health, and cluster summaries. "
+    "You are an HPC GPU infrastructure specialist managing DGX H100 clusters. "
+    "You have tools for: basic GPU telemetry (NVML), deep diagnostics (DCGM field groups, "
+    "XID errors, ECC), NVLink topology and interconnect health, NCCL collective profiling, "
+    "and cluster-wide health scoring. "
     "When the user asks about GPU status, use the appropriate tools to gather data. "
-    "Identify overloaded devices, thermal concerns, stuck jobs, memory pressure, "
-    "or workload imbalance. Be concise and actionable."
+    "Identify: overloaded devices, thermal concerns, stuck training jobs, memory pressure, "
+    "NVLink degradation, NCCL bandwidth bottlenecks, or workload imbalance across DGX nodes. "
+    "Be concise and actionable."
 )
 
 # System prompt for the legacy LLM analysis (post-keyword-dispatch).
@@ -171,12 +184,15 @@ async def _per_device_call(
 
 
 # ---------------------------------------------------------------------------
-# LLM-powered agent path (create_agent)
+# LLM-powered agent path (LangGraph StateGraph)
 # ---------------------------------------------------------------------------
 
 
 async def _run_llm_agent(query: str) -> dict[str, Any] | None:
-    """Attempt to process the query using a ``create_agent()`` LLM agent.
+    """Process the query using LangGraph StateGraph with tool binding.
+
+    Uses build_tool_agent from agent_factory to create a StateGraph with
+    model.bind_tools() (modern LangGraph 1.0 pattern).
 
     Returns the structured agent result dict, or None if the LLM agent
     cannot be created or invoked (so the caller should fall back to
@@ -189,41 +205,26 @@ async def _run_llm_agent(query: str) -> dict[str, Any] | None:
         Dict with "gpu_data" and "actions_taken" keys, or None on failure.
     """
     try:
-        from langchain.agents import create_agent
-        from langgraph.checkpoint.memory import MemorySaver
-
-        from agents.llm_provider import get_llm
+        from agents.agent_factory import build_tool_agent, run_tool_agent
         from agents.tools import GPU_TOOLS
 
-        llm = get_llm()
-        agent = create_agent(
-            model=llm,
+        agent = build_tool_agent(
             tools=GPU_TOOLS,
-            prompt=GPU_SYSTEM_PROMPT,
-            checkpointer=MemorySaver(),
+            system_prompt=GPU_SYSTEM_PROMPT,
+            agent_name="gpu_workload_agent",
         )
 
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": query}]},
-            config={"recursion_limit": 10},
-        )
-
-        response_text: str = result["messages"][-1].content
-
-        # Extract which tools were called from the message history
-        tools_called: list[str] = [
-            m.name
-            for m in result["messages"]
-            if hasattr(m, "name") and m.name
-        ]
+        result = await run_tool_agent(agent, query, "gpu_workload_agent")
+        if result is None:
+            return None
 
         return {
             "gpu_data": {
-                "raw": {"llm_response": response_text},
-                "tools_called": tools_called,
+                "raw": {"llm_response": result["response"]},
+                "tools_called": result["tools_called"],
             },
             "actions_taken": [
-                f"gpu_workload_agent: {t}" for t in tools_called
+                f"gpu_workload_agent: {t}" for t in result["tools_called"]
             ]
             or ["gpu_workload_agent: analyzed query via LLM agent"],
         }
@@ -258,8 +259,96 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
     tools_called: list[str] = []
     actions: list[str] = []
 
-    # --- List devices ---
+    # --- DCGM diagnostics ---
     if any(
+        kw in query_lower for kw in ("dcgm", "xid", "ecc", "retired page", "field group")
+    ):
+        if "xid" in query_lower or "error" in query_lower:
+            result_str = await _safe_call(
+                gpu_dcgm_xid_errors,
+                DcgmXidErrorsInput(device_index=device_index),
+                "gpu_dcgm_xid_errors",
+            )
+            results["xid_errors"] = result_str
+            tools_called.append("gpu_dcgm_xid_errors")
+            actions.append("gpu_workload_agent: queried DCGM XID error history")
+        elif "cluster" in query_lower or "fleet" in query_lower:
+            result_str = await _safe_call(
+                gpu_dcgm_cluster_health,
+                GpuDeviceIndexInput(device_index=0),
+                "gpu_dcgm_cluster_health",
+            )
+            results["dcgm_cluster"] = result_str
+            tools_called.append("gpu_dcgm_cluster_health")
+            actions.append("gpu_workload_agent: ran DCGM cluster health check")
+        else:
+            field_group = "health"
+            if "perf" in query_lower:
+                field_group = "performance"
+            elif "power" in query_lower:
+                field_group = "power"
+            elif "mem" in query_lower:
+                field_group = "memory"
+            result_str = await _safe_call(
+                gpu_dcgm_field_group,
+                DcgmFieldGroupInput(device_index=device_index or 0, field_group=field_group),
+                "gpu_dcgm_field_group",
+            )
+            results["dcgm_fields"] = result_str
+            tools_called.append("gpu_dcgm_field_group")
+            actions.append(f"gpu_workload_agent: queried DCGM {field_group} fields")
+
+    # --- NVLink / topology ---
+    elif any(
+        kw in query_lower for kw in ("nvlink", "nvswitch", "topology", "topo", "interconnect")
+    ):
+        if "topo" in query_lower or "nvswitch" in query_lower:
+            node_idx = device_index // 8 if device_index is not None else 0
+            result_str = await _safe_call(
+                gpu_nvlink_topology,
+                NvlinkTopologyInput(node_index=node_idx),
+                "gpu_nvlink_topology",
+            )
+            results["topology"] = result_str
+            tools_called.append("gpu_nvlink_topology")
+            actions.append("gpu_workload_agent: retrieved NVLink/NVSwitch topology")
+        else:
+            result_str = await _safe_call(
+                gpu_nvlink_status,
+                GpuDeviceIndexInput(device_index=device_index or 0),
+                "gpu_nvlink_status",
+            )
+            results["nvlink"] = result_str
+            tools_called.append("gpu_nvlink_status")
+            actions.append("gpu_workload_agent: checked NVLink status")
+
+    # --- NCCL profiling ---
+    elif any(
+        kw in query_lower for kw in ("nccl", "allreduce", "allgather", "collective", "bandwidth")
+    ):
+        operation = "allreduce"
+        if "allgather" in query_lower:
+            operation = "allgather"
+        elif "reduce_scatter" in query_lower or "reducescatter" in query_lower:
+            operation = "reduce_scatter"
+        elif "broadcast" in query_lower:
+            operation = "broadcast"
+
+        num_gpus = 8
+        if "32" in query_lower or "multi" in query_lower or "cross" in query_lower:
+            num_gpus = 32
+
+        result_str = await _safe_call(
+            gpu_nccl_profile,
+            NcclProfileInput(operation=operation, num_gpus=num_gpus),
+            "gpu_nccl_profile",
+        )
+        results["nccl"] = result_str
+        tools_called.append("gpu_nccl_profile")
+        actions.append(f"gpu_workload_agent: profiled NCCL {operation} ({num_gpus} GPUs)")
+
+    # --- List devices ---
+    elif any(
         kw in query_lower for kw in ("list", "devices", "gpus", "all gpu")
     ):
         result_str = await _safe_call(
@@ -419,7 +508,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
 async def gpu_workload_agent(state: dict) -> dict:
     """Process GPU-related queries using gpu_mcp tools.
 
-    Tries the LLM-powered ``create_agent()`` path first. If the LLM is
+    Tries the LLM-powered LangGraph agent path first. If the LLM is
     unavailable, falls back to deterministic keyword-based dispatch.
 
     The function signature is unchanged from the original so the orchestrator

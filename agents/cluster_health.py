@@ -6,11 +6,11 @@ Responsibilities:
 - Detect resource bottlenecks (CPU/memory)
 - Report on node health and capacity
 
-Primary path: Uses ``create_agent()`` with LangChain ``@tool``-decorated
-functions so the LLM can decide which tools to call.
+Primary path: Uses LangGraph StateGraph with model.bind_tools() for
+LLM-driven tool selection (modern LangGraph 1.0 pattern).
 
 Fallback path: If the LLM is unavailable (e.g. Ollama not running), falls
-back to the original keyword-based dispatch for deterministic operation.
+back to deterministic keyword-based dispatch.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from mcp_servers.k8s_mcp.tools.services import k8s_list_services
 
 logger = logging.getLogger(__name__)
 
-# System prompt for the LLM-powered create_agent path.
+# System prompt for the LLM-powered agent path (LangGraph StateGraph).
 K8S_SYSTEM_PROMPT: str = (
     "You are a Kubernetes cluster health specialist. "
     "You have tools to inspect pods, deployments, services, and logs. "
@@ -190,16 +190,15 @@ async def _safe_call(tool_fn: Any, params: Any, tool_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM-powered agent path (create_agent)
+# LLM-powered agent path (LangGraph StateGraph)
 # ---------------------------------------------------------------------------
 
 
 async def _run_llm_agent(query: str) -> dict[str, Any] | None:
-    """Attempt to process the query using a ``create_agent()`` LLM agent.
+    """Process the query using LangGraph StateGraph with tool binding.
 
-    Returns the structured agent result dict, or None if the LLM agent
-    cannot be created or invoked (so the caller should fall back to
-    keyword dispatch).
+    Uses build_tool_agent from agent_factory to create a StateGraph with
+    model.bind_tools() (modern LangGraph 1.0 pattern).
 
     Args:
         query: The user query string.
@@ -208,44 +207,29 @@ async def _run_llm_agent(query: str) -> dict[str, Any] | None:
         Dict with "k8s_data" and "actions_taken" keys, or None on failure.
     """
     try:
-        from langchain.agents import create_agent
-        from langgraph.checkpoint.memory import MemorySaver
-
-        from agents.llm_provider import get_llm
+        from agents.agent_factory import build_tool_agent, run_tool_agent
         from agents.tools import K8S_TOOLS
 
-        llm = get_llm()
-        agent = create_agent(
-            model=llm,
+        agent = build_tool_agent(
             tools=K8S_TOOLS,
-            prompt=K8S_SYSTEM_PROMPT,
-            checkpointer=MemorySaver(),
+            system_prompt=K8S_SYSTEM_PROMPT,
+            agent_name="cluster_health_agent",
         )
 
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": query}]},
-            config={"recursion_limit": 10},
-        )
-
-        response_text: str = result["messages"][-1].content
-
-        # Extract which tools were called from the message history
-        tools_called: list[str] = [
-            m.name
-            for m in result["messages"]
-            if hasattr(m, "name") and m.name
-        ]
+        result = await run_tool_agent(agent, query, "cluster_health_agent")
+        if result is None:
+            return None
 
         namespace: str = _parse_namespace(query)
 
         return {
             "k8s_data": {
-                "raw": {"llm_response": response_text},
-                "tools_called": tools_called,
+                "raw": {"llm_response": result["response"]},
+                "tools_called": result["tools_called"],
                 "namespace": namespace,
             },
             "actions_taken": [
-                f"cluster_health_agent: {t}" for t in tools_called
+                f"cluster_health_agent: {t}" for t in result["tools_called"]
             ]
             or ["cluster_health_agent: analyzed query via LLM agent"],
         }
@@ -514,7 +498,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
 async def cluster_health_agent(state: dict) -> dict:
     """Process Kubernetes-related queries using k8s_mcp tools.
 
-    Tries the LLM-powered ``create_agent()`` path first. If the LLM is
+    Tries the LLM-powered LangGraph agent path first. If the LLM is
     unavailable, falls back to deterministic keyword-based dispatch.
 
     The function signature is unchanged from the original so the orchestrator

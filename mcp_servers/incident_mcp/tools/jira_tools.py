@@ -1,21 +1,36 @@
-"""Jira ticket operations for incident_mcp."""
+"""Jira ticket operations for incident_mcp.
+
+All tools auto-detect Jira availability by attempting to create an
+authenticated client.  When Jira is not configured the tool returns a
+structured JSON error instead of raising.
+"""
 
 import json
 import logging
-import random
 
 import httpx
 
-from config import settings
 from mcp_servers.incident_mcp.models import (
     JiraCreateTicketInput,
     JiraSearchInput,
     JiraUpdateTicketInput,
 )
 from mcp_servers.incident_mcp.server import mcp
-from mcp_servers.incident_mcp.utils import get_jira_client, get_mock_jira_tickets
+from mcp_servers.incident_mcp.utils import JiraUnavailableError, get_jira_client
 
 logger = logging.getLogger(__name__)
+
+
+def _jira_unavailable_response(exc: JiraUnavailableError) -> str:
+    """Return a standardised JSON error when Jira is not configured."""
+    return json.dumps(
+        {
+            "error": "Jira not configured",
+            "detail": str(exc),
+            "hint": "Set INFRA_AGENT_JIRA_URL and INFRA_AGENT_JIRA_TOKEN in .env",
+        },
+        indent=2,
+    )
 
 
 @mcp.tool(
@@ -33,28 +48,14 @@ async def incident_jira_create_ticket(params: JiraCreateTicketInput) -> str:
         extra={"project_key": params.project_key, "summary": params.summary},
     )
 
-    if settings.mock_jira:
-        logger.debug("Using mock mode for Jira create ticket")
-        ticket_num = random.randint(100, 999)
-        ticket_key = f"{params.project_key}-{ticket_num}"
-        result = {
-            "key": ticket_key,
-            "self": f"https://jira.example.com/rest/api/3/issue/{ticket_key}",
-            "fields": {
-                "summary": params.summary,
-                "description": params.description,
-                "issuetype": {"name": params.issue_type},
-                "priority": {"name": params.priority},
-                "status": {"name": "Open"},
-                "labels": params.labels,
-                "project": {"key": params.project_key},
-            },
-        }
-        return json.dumps(result, indent=2, default=str)
-
-    # Real Jira API call
     try:
-        async with get_jira_client() as client:
+        client = get_jira_client()
+    except JiraUnavailableError as exc:
+        logger.warning("Jira unavailable: %s", exc)
+        return _jira_unavailable_response(exc)
+
+    try:
+        async with client:
             payload = {
                 "fields": {
                     "project": {"key": params.project_key},
@@ -65,7 +66,9 @@ async def incident_jira_create_ticket(params: JiraCreateTicketInput) -> str:
                         "content": [
                             {
                                 "type": "paragraph",
-                                "content": [{"type": "text", "text": params.description}],
+                                "content": [
+                                    {"type": "text", "text": params.description}
+                                ],
                             }
                         ],
                     },
@@ -76,7 +79,7 @@ async def incident_jira_create_ticket(params: JiraCreateTicketInput) -> str:
             }
             resp = await client.post("/rest/api/3/issue", json=payload)
             resp.raise_for_status()
-            data = resp.json()
+            data: dict = resp.json()
             logger.info("Jira ticket created", extra={"key": data.get("key")})
             return json.dumps(data, indent=2, default=str)
     except httpx.HTTPStatusError as exc:
@@ -127,26 +130,20 @@ async def incident_jira_search(params: JiraSearchInput) -> str:
     """Search Jira for related incidents using JQL."""
     logger.info("incident_jira_search called", extra={"jql": params.jql})
 
-    if settings.mock_jira:
-        logger.debug("Using mock mode for Jira search")
-        tickets = get_mock_jira_tickets(jql=params.jql)
-        limited = tickets[: params.max_results]
-        result = {
-            "total": len(limited),
-            "maxResults": params.max_results,
-            "issues": limited,
-        }
-        return json.dumps(result, indent=2, default=str)
-
-    # Real Jira API call
     try:
-        async with get_jira_client() as client:
+        client = get_jira_client()
+    except JiraUnavailableError as exc:
+        logger.warning("Jira unavailable: %s", exc)
+        return _jira_unavailable_response(exc)
+
+    try:
+        async with client:
             resp = await client.get(
                 "/rest/api/3/search",
                 params={"jql": params.jql, "maxResults": params.max_results},
             )
             resp.raise_for_status()
-            data = resp.json()
+            data: dict = resp.json()
             logger.info(
                 "Jira search completed",
                 extra={"total": data.get("total", 0)},
@@ -177,7 +174,10 @@ async def incident_jira_search(params: JiraSearchInput) -> str:
             default=str,
         )
     except Exception as exc:
-        logger.error("Unexpected error searching Jira", extra={"error": str(exc)})
+        logger.error(
+            "Unexpected error searching Jira",
+            extra={"error": str(exc)},
+        )
         return json.dumps(
             {"error": "Unexpected error", "detail": str(exc)},
             indent=2,
@@ -200,31 +200,21 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
         extra={"issue_key": params.issue_key},
     )
 
-    if settings.mock_jira:
-        logger.debug("Using mock mode for Jira update ticket")
-        updates_applied: list[str] = []
-        if params.status:
-            updates_applied.append(f"status -> {params.status}")
-        if params.assignee:
-            updates_applied.append(f"assignee -> {params.assignee}")
-        if params.comment:
-            updates_applied.append(f"comment added ({len(params.comment)} chars)")
-        result = {
-            "issue_key": params.issue_key,
-            "success": True,
-            "updates_applied": updates_applied,
-            "message": (f"Ticket {params.issue_key} updated successfully (mock mode)"),
-        }
-        return json.dumps(result, indent=2, default=str)
-
-    # Real Jira API calls
     try:
-        async with get_jira_client() as client:
-            updates_applied = []
+        client = get_jira_client()
+    except JiraUnavailableError as exc:
+        logger.warning("Jira unavailable: %s", exc)
+        return _jira_unavailable_response(exc)
+
+    try:
+        async with client:
+            updates_applied: list[str] = []
 
             # Update fields (assignee)
             if params.assignee:
-                field_payload = {"fields": {"assignee": {"emailAddress": params.assignee}}}
+                field_payload = {
+                    "fields": {"assignee": {"emailAddress": params.assignee}}
+                }
                 resp = await client.put(
                     f"/rest/api/3/issue/{params.issue_key}",
                     json=field_payload,
@@ -241,7 +231,9 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
                         "content": [
                             {
                                 "type": "paragraph",
-                                "content": [{"type": "text", "text": params.comment}],
+                                "content": [
+                                    {"type": "text", "text": params.comment}
+                                ],
                             }
                         ],
                     }
@@ -251,16 +243,23 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
                     json=comment_payload,
                 )
                 resp.raise_for_status()
-                updates_applied.append(f"comment added ({len(params.comment)} chars)")
+                updates_applied.append(
+                    f"comment added ({len(params.comment)} chars)"
+                )
 
             # Transition status
             if params.status:
-                # First, get available transitions
-                resp = await client.get(f"/rest/api/3/issue/{params.issue_key}/transitions")
+                resp = await client.get(
+                    f"/rest/api/3/issue/{params.issue_key}/transitions"
+                )
                 resp.raise_for_status()
-                transitions = resp.json().get("transitions", [])
+                transitions: list[dict] = resp.json().get("transitions", [])
                 target = next(
-                    (t for t in transitions if t["name"].lower() == params.status.lower()),
+                    (
+                        t
+                        for t in transitions
+                        if t["name"].lower() == params.status.lower()
+                    ),
                     None,
                 )
                 if target:
@@ -273,14 +272,15 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
                 else:
                     available = [t["name"] for t in transitions]
                     updates_applied.append(
-                        f"status transition '{params.status}' not found; available: {available}"
+                        f"status transition '{params.status}' not found; "
+                        f"available: {available}"
                     )
 
-            result = {
+            result: dict = {
                 "issue_key": params.issue_key,
                 "success": True,
                 "updates_applied": updates_applied,
-                "message": (f"Ticket {params.issue_key} updated successfully"),
+                "message": f"Ticket {params.issue_key} updated successfully",
             }
             logger.info(
                 "Jira ticket updated",

@@ -7,11 +7,11 @@ Responsibilities:
 - Create/update Jira tickets
 - Acknowledge/resolve PagerDuty incidents
 
-Primary path: Uses ``create_agent()`` with LangChain ``@tool``-decorated
-functions so the LLM can decide which tools to call.
+Primary path: Uses LangGraph StateGraph with model.bind_tools() for
+LLM-driven tool selection (modern LangGraph 1.0 pattern).
 
 Fallback path: If the LLM is unavailable (e.g. Ollama not running), falls
-back to the original keyword-based dispatch for deterministic operation.
+back to deterministic keyword-based dispatch.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from mcp_servers.incident_mcp.tools.rca import incident_generate_rca
 
 logger = logging.getLogger(__name__)
 
-# System prompt for the LLM-powered create_agent path.
+# System prompt for the LLM-powered agent path (LangGraph StateGraph).
 INCIDENT_SYSTEM_PROMPT: str = (
     "You are an incident response specialist. "
     "You have tools to manage PagerDuty incidents, query Grafana alerts and metrics, "
@@ -226,16 +226,15 @@ async def _safe_call(tool_fn: Any, params: Any, tool_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM-powered agent path (create_agent)
+# LLM-powered agent path (LangGraph StateGraph)
 # ---------------------------------------------------------------------------
 
 
 async def _run_llm_agent(query: str) -> dict[str, Any] | None:
-    """Attempt to process the query using a ``create_agent()`` LLM agent.
+    """Process the query using LangGraph StateGraph with tool binding.
 
-    Returns the structured agent result dict, or None if the LLM agent
-    cannot be created or invoked (so the caller should fall back to
-    keyword dispatch).
+    Uses build_tool_agent from agent_factory to create a StateGraph with
+    model.bind_tools() (modern LangGraph 1.0 pattern).
 
     Args:
         query: The user query string.
@@ -244,41 +243,26 @@ async def _run_llm_agent(query: str) -> dict[str, Any] | None:
         Dict with "incident_data" and "actions_taken" keys, or None on failure.
     """
     try:
-        from langchain.agents import create_agent
-        from langgraph.checkpoint.memory import MemorySaver
-
-        from agents.llm_provider import get_llm
+        from agents.agent_factory import build_tool_agent, run_tool_agent
         from agents.tools import INCIDENT_TOOLS
 
-        llm = get_llm()
-        agent = create_agent(
-            model=llm,
+        agent = build_tool_agent(
             tools=INCIDENT_TOOLS,
-            prompt=INCIDENT_SYSTEM_PROMPT,
-            checkpointer=MemorySaver(),
+            system_prompt=INCIDENT_SYSTEM_PROMPT,
+            agent_name="incident_response_agent",
         )
 
-        result = await agent.ainvoke(
-            {"messages": [{"role": "user", "content": query}]},
-            config={"recursion_limit": 10},
-        )
-
-        response_text: str = result["messages"][-1].content
-
-        # Extract which tools were called from the message history
-        tools_called: list[str] = [
-            m.name
-            for m in result["messages"]
-            if hasattr(m, "name") and m.name
-        ]
+        result = await run_tool_agent(agent, query, "incident_response_agent")
+        if result is None:
+            return None
 
         return {
             "incident_data": {
-                "raw": {"llm_response": response_text},
-                "tools_called": tools_called,
+                "raw": {"llm_response": result["response"]},
+                "tools_called": result["tools_called"],
             },
             "actions_taken": [
-                f"incident_response_agent: {t}" for t in tools_called
+                f"incident_response_agent: {t}" for t in result["tools_called"]
             ]
             or ["incident_response_agent: analyzed query via LLM agent"],
         }
@@ -555,7 +539,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
 async def incident_response_agent(state: dict) -> dict:
     """Process incident-related queries using incident_mcp tools.
 
-    Tries the LLM-powered ``create_agent()`` path first. If the LLM is
+    Tries the LLM-powered LangGraph agent path first. If the LLM is
     unavailable, falls back to deterministic keyword-based dispatch.
 
     The function signature is unchanged from the original so the orchestrator

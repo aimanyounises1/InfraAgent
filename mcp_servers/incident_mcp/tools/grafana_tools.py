@@ -1,11 +1,15 @@
-"""Grafana query tools for incident_mcp."""
+"""Grafana query tools for incident_mcp.
+
+All tools auto-detect Grafana availability by attempting to create an
+authenticated client.  When Grafana is not configured the tool returns a
+structured JSON error instead of raising.
+"""
 
 import json
 import logging
 
 import httpx
 
-from config import settings
 from mcp_servers.incident_mcp.models import (
     GrafanaGetAlertsInput,
     GrafanaGetDashboardInput,
@@ -13,13 +17,26 @@ from mcp_servers.incident_mcp.models import (
 )
 from mcp_servers.incident_mcp.server import mcp
 from mcp_servers.incident_mcp.utils import (
+    GrafanaUnavailableError,
     get_grafana_client,
-    get_mock_grafana_alerts,
-    get_mock_grafana_dashboard,
-    get_mock_grafana_metrics,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _grafana_unavailable_response(exc: GrafanaUnavailableError) -> str:
+    """Return a standardised JSON error when Grafana is not configured."""
+    return json.dumps(
+        {
+            "error": "Grafana not configured",
+            "detail": str(exc),
+            "hint": (
+                "Set INFRA_AGENT_GRAFANA_URL and "
+                "INFRA_AGENT_GRAFANA_TOKEN in .env"
+            ),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool(
@@ -34,14 +51,14 @@ async def incident_grafana_query(params: GrafanaQueryInput) -> str:
     """Query Grafana for metrics using PromQL."""
     logger.info("incident_grafana_query called", extra={"query": params.query})
 
-    if settings.mock_grafana:
-        logger.debug("Using mock mode for Grafana query")
-        data = get_mock_grafana_metrics(query=params.query)
-        return json.dumps(data, indent=2, default=str)
-
-    # Real Grafana API call
     try:
-        async with get_grafana_client() as client:
+        client = get_grafana_client()
+    except GrafanaUnavailableError as exc:
+        logger.warning("Grafana unavailable: %s", exc)
+        return _grafana_unavailable_response(exc)
+
+    try:
+        async with client:
             payload: dict = {
                 "queries": [
                     {
@@ -59,7 +76,7 @@ async def incident_grafana_query(params: GrafanaQueryInput) -> str:
 
             resp = await client.post("/api/ds/query", json=payload)
             resp.raise_for_status()
-            data = resp.json()
+            data: dict = resp.json()
             logger.info("Grafana query completed")
             return json.dumps(data, indent=2, default=str)
     except httpx.HTTPStatusError as exc:
@@ -87,7 +104,10 @@ async def incident_grafana_query(params: GrafanaQueryInput) -> str:
             default=str,
         )
     except Exception as exc:
-        logger.error("Unexpected error querying Grafana", extra={"error": str(exc)})
+        logger.error(
+            "Unexpected error querying Grafana",
+            extra={"error": str(exc)},
+        )
         return json.dumps(
             {"error": "Unexpected error", "detail": str(exc)},
             indent=2,
@@ -105,17 +125,19 @@ async def incident_grafana_query(params: GrafanaQueryInput) -> str:
 )
 async def incident_grafana_get_alerts(params: GrafanaGetAlertsInput) -> str:
     """Get active Grafana alerts with optional state filter."""
-    logger.info("incident_grafana_get_alerts called", extra={"state": params.state})
+    logger.info(
+        "incident_grafana_get_alerts called",
+        extra={"state": params.state},
+    )
 
-    if settings.mock_grafana:
-        logger.debug("Using mock mode for Grafana alerts")
-        alerts = get_mock_grafana_alerts(state=params.state or "")
-        result = {"alerts": alerts, "total": len(alerts)}
-        return json.dumps(result, indent=2, default=str)
-
-    # Real Grafana API call
     try:
-        async with get_grafana_client() as client:
+        client = get_grafana_client()
+    except GrafanaUnavailableError as exc:
+        logger.warning("Grafana unavailable: %s", exc)
+        return _grafana_unavailable_response(exc)
+
+    try:
+        async with client:
             query_params: dict[str, str] = {}
             if params.state:
                 query_params["filter"] = f"state={params.state}"
@@ -125,8 +147,8 @@ async def incident_grafana_get_alerts(params: GrafanaGetAlertsInput) -> str:
                 params=query_params,
             )
             resp.raise_for_status()
-            alerts = resp.json()
-            result = {"alerts": alerts, "total": len(alerts)}
+            alerts: list = resp.json()
+            result: dict = {"alerts": alerts, "total": len(alerts)}
             logger.info(
                 "Grafana alerts retrieved",
                 extra={"count": len(alerts)},
@@ -185,17 +207,19 @@ async def incident_grafana_get_dashboard(
         extra={"uid": params.dashboard_uid},
     )
 
-    if settings.mock_grafana:
-        logger.debug("Using mock mode for Grafana dashboard")
-        data = get_mock_grafana_dashboard(uid=params.dashboard_uid)
-        return json.dumps(data, indent=2, default=str)
-
-    # Real Grafana API call
     try:
-        async with get_grafana_client() as client:
-            resp = await client.get(f"/api/dashboards/uid/{params.dashboard_uid}")
+        client = get_grafana_client()
+    except GrafanaUnavailableError as exc:
+        logger.warning("Grafana unavailable: %s", exc)
+        return _grafana_unavailable_response(exc)
+
+    try:
+        async with client:
+            resp = await client.get(
+                f"/api/dashboards/uid/{params.dashboard_uid}"
+            )
             resp.raise_for_status()
-            data = resp.json()
+            data: dict = resp.json()
             logger.info(
                 "Grafana dashboard retrieved",
                 extra={"uid": params.dashboard_uid},

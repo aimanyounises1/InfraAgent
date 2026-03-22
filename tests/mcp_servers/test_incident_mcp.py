@@ -1,11 +1,19 @@
 """Tests for incident_mcp server tools.
 
-All tests run in mock mode (settings.mock_* = True by default).
+Tests cover three categories for each tool:
+1. **Unavailable path** -- service not configured, tool returns structured error JSON.
+2. **Real API path** -- ``respx`` mocks HTTP responses, tool processes them correctly.
+3. **Input validation** -- Pydantic rejects invalid inputs.
 """
 
-import json
+from __future__ import annotations
 
+import json
+from unittest.mock import patch
+
+import httpx
 import pytest
+import respx
 from pydantic import ValidationError
 
 from mcp_servers.incident_mcp.models import (
@@ -37,76 +45,83 @@ from mcp_servers.incident_mcp.tools.pagerduty_tools import (
 )
 from mcp_servers.incident_mcp.tools.rca import incident_generate_rca
 from mcp_servers.incident_mcp.utils import (
-    get_mock_grafana_alerts,
-    get_mock_grafana_dashboard,
-    get_mock_grafana_metrics,
-    get_mock_jira_tickets,
-    get_mock_pd_incidents,
+    GrafanaUnavailableError,
+    JiraUnavailableError,
+    PagerDutyUnavailableError,
+    get_grafana_client,
+    get_jira_client,
+    get_pagerduty_client,
 )
 
 # ---------------------------------------------------------------------------
-# Mock Data Generator Tests
+# Helpers
+# ---------------------------------------------------------------------------
+
+JIRA_BASE = "https://jira.test.local"
+GRAFANA_BASE = "https://grafana.test.local"
+PD_BASE = "https://api.pagerduty.com"
+
+
+# ---------------------------------------------------------------------------
+# Client Factory Tests
 # ---------------------------------------------------------------------------
 
 
-class TestMockDataGenerators:
-    """Verify the mock data helpers return well-structured data."""
+class TestClientFactories:
+    """Verify that client factories raise when services are not configured."""
 
-    def test_mock_jira_tickets_returns_list(self) -> None:
-        tickets = get_mock_jira_tickets()
-        assert isinstance(tickets, list)
-        assert len(tickets) >= 3
+    def test_jira_client_raises_when_unconfigured(self) -> None:
+        with patch(
+            "config.settings.jira_url", "", create=False
+        ), patch(
+            "config.settings.jira_token", "", create=False
+        ), pytest.raises(JiraUnavailableError):
+            get_jira_client()
 
-    def test_mock_jira_tickets_have_required_fields(self) -> None:
-        tickets = get_mock_jira_tickets()
-        for t in tickets:
-            assert "key" in t
-            assert "fields" in t
-            assert "summary" in t["fields"]
-            assert "status" in t["fields"]
+    def test_jira_client_raises_when_token_missing(self) -> None:
+        with patch(
+            "config.settings.jira_url", JIRA_BASE, create=False
+        ), patch(
+            "config.settings.jira_token", "", create=False
+        ), pytest.raises(JiraUnavailableError):
+            get_jira_client()
 
-    def test_mock_jira_tickets_jql_filter(self) -> None:
-        tickets = get_mock_jira_tickets(jql="redis")
-        assert any("redis" in t["fields"]["summary"].lower() for t in tickets)
+    def test_jira_client_returns_client_when_configured(self) -> None:
+        with patch(
+            "config.settings.jira_url", JIRA_BASE, create=False
+        ), patch("config.settings.jira_token", "test-token", create=False):
+            client = get_jira_client()
+            assert isinstance(client, httpx.AsyncClient)
 
-    def test_mock_grafana_metrics_structure(self) -> None:
-        data = get_mock_grafana_metrics(query="node_cpu_seconds_total")
-        assert data["status"] == "success"
-        assert "data" in data
-        results = data["data"]["result"]
-        assert len(results) > 0
-        assert len(results[0]["values"]) == 10
+    def test_grafana_client_raises_when_unconfigured(self) -> None:
+        with patch(
+            "config.settings.grafana_url", "", create=False
+        ), patch(
+            "config.settings.grafana_token", "", create=False
+        ), pytest.raises(GrafanaUnavailableError):
+            get_grafana_client()
 
-    def test_mock_grafana_alerts_returns_list(self) -> None:
-        alerts = get_mock_grafana_alerts()
-        assert isinstance(alerts, list)
-        assert len(alerts) >= 2
+    def test_grafana_client_returns_client_when_configured(self) -> None:
+        with patch(
+            "config.settings.grafana_url", GRAFANA_BASE, create=False
+        ), patch(
+            "config.settings.grafana_token", "test-token", create=False
+        ):
+            client = get_grafana_client()
+            assert isinstance(client, httpx.AsyncClient)
 
-    def test_mock_grafana_alerts_state_filter(self) -> None:
-        firing = get_mock_grafana_alerts(state="firing")
-        assert all(a["state"] == "firing" for a in firing)
+    def test_pagerduty_client_raises_when_unconfigured(self) -> None:
+        with patch(
+            "config.settings.pagerduty_token", "", create=False
+        ), pytest.raises(PagerDutyUnavailableError):
+            get_pagerduty_client()
 
-    def test_mock_grafana_alerts_state_filter_resolved(self) -> None:
-        resolved = get_mock_grafana_alerts(state="resolved")
-        assert all(a["state"] == "resolved" for a in resolved)
-
-    def test_mock_grafana_dashboard_structure(self) -> None:
-        dash = get_mock_grafana_dashboard(uid="abc123")
-        assert dash["dashboard"]["uid"] == "abc123"
-        assert len(dash["dashboard"]["panels"]) >= 3
-
-    def test_mock_pd_incidents_returns_list(self) -> None:
-        incidents = get_mock_pd_incidents()
-        assert isinstance(incidents, list)
-        assert len(incidents) >= 1
-
-    def test_mock_pd_incidents_status_filter(self) -> None:
-        triggered = get_mock_pd_incidents(status="triggered")
-        assert all(i["status"] == "triggered" for i in triggered)
-
-    def test_mock_pd_incidents_multi_status_filter(self) -> None:
-        multi = get_mock_pd_incidents(status="triggered,acknowledged")
-        assert all(i["status"] in ("triggered", "acknowledged") for i in multi)
+    def test_pagerduty_client_returns_client_when_configured(self) -> None:
+        with patch(
+            "config.settings.pagerduty_token", "test-token", create=False
+        ):
+            client = get_pagerduty_client()
+            assert isinstance(client, httpx.AsyncClient)
 
 
 # ---------------------------------------------------------------------------
@@ -118,33 +133,72 @@ class TestJiraCreateTicket:
     """Tests for incident_jira_create_ticket tool."""
 
     @pytest.mark.asyncio
-    async def test_create_ticket_mock_mode(self, mock_httpx_client) -> None:
-        """Should create a ticket in mock mode and return valid JSON."""
-        params = JiraCreateTicketInput(
-            project_key="OPS",
-            summary="Test incident: API latency spike",
-            description="Investigating high p99 latency",
-            issue_type="Incident",
-            priority="High",
-            labels=["production", "api"],
+    async def test_returns_error_when_jira_unavailable(self) -> None:
+        """Tool should return structured error JSON when Jira is not configured."""
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            side_effect=JiraUnavailableError("not configured"),
+        ):
+            params = JiraCreateTicketInput(
+                project_key="OPS",
+                summary="Test ticket",
+            )
+            result = await incident_jira_create_ticket(params)
+            data = json.loads(result)
+
+            assert data["error"] == "Jira not configured"
+            assert "hint" in data
+            assert "INFRA_AGENT_JIRA_URL" in data["hint"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_creates_ticket_via_api(self) -> None:
+        """Tool should POST to Jira and return created ticket data."""
+        api_response = {"key": "OPS-42", "id": "12345", "self": "..."}
+        respx.post(f"{JIRA_BASE}/rest/api/3/issue").mock(
+            return_value=httpx.Response(201, json=api_response)
         )
-        result = await incident_jira_create_ticket(params)
-        data = json.loads(result)
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            return_value=httpx.AsyncClient(base_url=JIRA_BASE),
+        ):
+            params = JiraCreateTicketInput(
+                project_key="OPS",
+                summary="API latency spike",
+                description="Investigating high p99 latency",
+                priority="High",
+                labels=["production"],
+            )
+            result = await incident_jira_create_ticket(params)
+            data = json.loads(result)
 
-        assert "key" in data
-        assert data["key"].startswith("OPS-")
-        assert data["fields"]["summary"] == "Test incident: API latency spike"
-        assert data["fields"]["priority"]["name"] == "High"
-        assert data["fields"]["status"]["name"] == "Open"
-        assert "production" in data["fields"]["labels"]
+            assert data["key"] == "OPS-42"
 
-    def test_create_ticket_input_validation(self) -> None:
-        """Should validate required fields."""
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_handles_api_error(self) -> None:
+        """Tool should return error JSON on HTTP 400."""
+        respx.post(f"{JIRA_BASE}/rest/api/3/issue").mock(
+            return_value=httpx.Response(400, json={"errorMessages": ["bad"]})
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            return_value=httpx.AsyncClient(base_url=JIRA_BASE),
+        ):
+            params = JiraCreateTicketInput(
+                project_key="OPS", summary="Bad ticket"
+            )
+            result = await incident_jira_create_ticket(params)
+            data = json.loads(result)
+
+            assert "error" in data
+            assert data["status_code"] == 400
+
+    def test_input_validation_rejects_empty_fields(self) -> None:
         with pytest.raises(ValidationError):
             JiraCreateTicketInput(project_key="", summary="")
 
-    def test_create_ticket_defaults(self) -> None:
-        """Should apply default values correctly."""
+    def test_defaults_applied(self) -> None:
         params = JiraCreateTicketInput(project_key="INFRA", summary="Test")
         assert params.issue_type == "Bug"
         assert params.priority == "High"
@@ -155,27 +209,38 @@ class TestJiraSearch:
     """Tests for incident_jira_search tool."""
 
     @pytest.mark.asyncio
-    async def test_search_mock_mode(self, mock_httpx_client) -> None:
-        """Should return search results in mock mode."""
-        params = JiraSearchInput(jql="project=INFRA", max_results=10)
-        result = await incident_jira_search(params)
-        data = json.loads(result)
+    async def test_returns_error_when_jira_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            side_effect=JiraUnavailableError("not configured"),
+        ):
+            params = JiraSearchInput(jql="project=OPS")
+            result = await incident_jira_search(params)
+            data = json.loads(result)
+            assert data["error"] == "Jira not configured"
 
-        assert "issues" in data
-        assert "total" in data
-        assert isinstance(data["issues"], list)
-        assert data["total"] > 0
-
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_search_respects_max_results(self, mock_httpx_client) -> None:
-        """Should limit results to max_results."""
-        params = JiraSearchInput(jql="project=INFRA", max_results=2)
-        result = await incident_jira_search(params)
-        data = json.loads(result)
-        assert len(data["issues"]) <= 2
+    async def test_searches_via_api(self) -> None:
+        api_response = {
+            "total": 1,
+            "issues": [{"key": "OPS-1", "fields": {"summary": "test"}}],
+        }
+        respx.get(f"{JIRA_BASE}/rest/api/3/search").mock(
+            return_value=httpx.Response(200, json=api_response)
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            return_value=httpx.AsyncClient(base_url=JIRA_BASE),
+        ):
+            params = JiraSearchInput(jql="project=OPS", max_results=10)
+            result = await incident_jira_search(params)
+            data = json.loads(result)
 
-    def test_search_input_validation(self) -> None:
-        """Should reject empty JQL."""
+            assert data["total"] == 1
+            assert data["issues"][0]["key"] == "OPS-1"
+
+    def test_input_validation_rejects_empty_jql(self) -> None:
         with pytest.raises(ValidationError):
             JiraSearchInput(jql="")
 
@@ -184,46 +249,87 @@ class TestJiraUpdateTicket:
     """Tests for incident_jira_update_ticket tool."""
 
     @pytest.mark.asyncio
-    async def test_update_ticket_status_mock(self, mock_httpx_client) -> None:
-        """Should update status in mock mode."""
-        params = JiraUpdateTicketInput(issue_key="INFRA-101", status="Resolved")
-        result = await incident_jira_update_ticket(params)
-        data = json.loads(result)
+    async def test_returns_error_when_jira_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            side_effect=JiraUnavailableError("not configured"),
+        ):
+            params = JiraUpdateTicketInput(
+                issue_key="OPS-1", status="Resolved"
+            )
+            result = await incident_jira_update_ticket(params)
+            data = json.loads(result)
+            assert data["error"] == "Jira not configured"
 
-        assert data["success"] is True
-        assert data["issue_key"] == "INFRA-101"
-        assert any("status" in u for u in data["updates_applied"])
-
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_update_ticket_comment_mock(self, mock_httpx_client) -> None:
-        """Should add comment in mock mode."""
-        params = JiraUpdateTicketInput(
-            issue_key="INFRA-102",
-            comment="Incident resolved by scaling up.",
+    async def test_updates_assignee_via_api(self) -> None:
+        respx.put(f"{JIRA_BASE}/rest/api/3/issue/OPS-1").mock(
+            return_value=httpx.Response(204)
         )
-        result = await incident_jira_update_ticket(params)
-        data = json.loads(result)
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            return_value=httpx.AsyncClient(base_url=JIRA_BASE),
+        ):
+            params = JiraUpdateTicketInput(
+                issue_key="OPS-1", assignee="alice@example.com"
+            )
+            result = await incident_jira_update_ticket(params)
+            data = json.loads(result)
 
-        assert data["success"] is True
-        assert any("comment" in u for u in data["updates_applied"])
+            assert data["success"] is True
+            assert any("assignee" in u for u in data["updates_applied"])
 
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_update_ticket_multiple_fields(self, mock_httpx_client) -> None:
-        """Should handle multiple simultaneous updates."""
-        params = JiraUpdateTicketInput(
-            issue_key="INFRA-103",
-            status="In Progress",
-            assignee="alice@example.com",
-            comment="Taking ownership.",
+    async def test_adds_comment_via_api(self) -> None:
+        respx.post(f"{JIRA_BASE}/rest/api/3/issue/OPS-1/comment").mock(
+            return_value=httpx.Response(201, json={"id": "100"})
         )
-        result = await incident_jira_update_ticket(params)
-        data = json.loads(result)
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            return_value=httpx.AsyncClient(base_url=JIRA_BASE),
+        ):
+            params = JiraUpdateTicketInput(
+                issue_key="OPS-1", comment="Scaling up."
+            )
+            result = await incident_jira_update_ticket(params)
+            data = json.loads(result)
 
-        assert data["success"] is True
-        assert len(data["updates_applied"]) == 3
+            assert data["success"] is True
+            assert any("comment" in u for u in data["updates_applied"])
 
-    def test_update_ticket_input_validation(self) -> None:
-        """Should reject empty issue key."""
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_transitions_status_via_api(self) -> None:
+        respx.get(f"{JIRA_BASE}/rest/api/3/issue/OPS-1/transitions").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "transitions": [
+                        {"id": "31", "name": "Resolved"},
+                        {"id": "21", "name": "In Progress"},
+                    ]
+                },
+            ),
+        )
+        respx.post(f"{JIRA_BASE}/rest/api/3/issue/OPS-1/transitions").mock(
+            return_value=httpx.Response(204)
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.jira_tools.get_jira_client",
+            return_value=httpx.AsyncClient(base_url=JIRA_BASE),
+        ):
+            params = JiraUpdateTicketInput(
+                issue_key="OPS-1", status="Resolved"
+            )
+            result = await incident_jira_update_ticket(params)
+            data = json.loads(result)
+
+            assert data["success"] is True
+            assert any("status" in u for u in data["updates_applied"])
+
+    def test_input_validation_rejects_empty_key(self) -> None:
         with pytest.raises(ValidationError):
             JiraUpdateTicketInput(issue_key="")
 
@@ -237,32 +343,37 @@ class TestGrafanaQuery:
     """Tests for incident_grafana_query tool."""
 
     @pytest.mark.asyncio
-    async def test_query_metrics(self, mock_httpx_client) -> None:
-        """Should execute a PromQL query and return time-series data."""
-        params = GrafanaQueryInput(query="rate(http_requests_total[5m])")
-        result = await incident_grafana_query(params)
-        data = json.loads(result)
+    async def test_returns_error_when_grafana_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.grafana_tools.get_grafana_client",
+            side_effect=GrafanaUnavailableError("not configured"),
+        ):
+            params = GrafanaQueryInput(query="rate(http_requests_total[5m])")
+            result = await incident_grafana_query(params)
+            data = json.loads(result)
+            assert data["error"] == "Grafana not configured"
+            assert "INFRA_AGENT_GRAFANA_URL" in data["hint"]
 
-        assert data["status"] == "success"
-        assert "data" in data
-        assert len(data["data"]["result"]) > 0
-        assert len(data["data"]["result"][0]["values"]) > 0
-
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_query_with_time_range(self, mock_httpx_client) -> None:
-        """Should accept optional time range parameters."""
-        params = GrafanaQueryInput(
-            query="node_cpu_seconds_total",
-            start="2024-01-01T00:00:00Z",
-            end="2024-01-01T01:00:00Z",
-            step="30s",
+    async def test_queries_metrics_via_api(self) -> None:
+        api_response = {
+            "results": {"A": {"frames": [{"data": {"values": [[1, 2]]}}]}}
+        }
+        respx.post(f"{GRAFANA_BASE}/api/ds/query").mock(
+            return_value=httpx.Response(200, json=api_response)
         )
-        result = await incident_grafana_query(params)
-        data = json.loads(result)
-        assert data["status"] == "success"
+        with patch(
+            "mcp_servers.incident_mcp.tools.grafana_tools.get_grafana_client",
+            return_value=httpx.AsyncClient(base_url=GRAFANA_BASE),
+        ):
+            params = GrafanaQueryInput(query="rate(http_requests_total[5m])")
+            result = await incident_grafana_query(params)
+            data = json.loads(result)
 
-    def test_query_input_validation(self) -> None:
-        """Should reject empty query."""
+            assert "results" in data
+
+    def test_input_validation_rejects_empty_query(self) -> None:
         with pytest.raises(ValidationError):
             GrafanaQueryInput(query="")
 
@@ -271,44 +382,78 @@ class TestGrafanaGetAlerts:
     """Tests for incident_grafana_get_alerts tool."""
 
     @pytest.mark.asyncio
-    async def test_get_all_alerts(self, mock_httpx_client) -> None:
-        """Should return all alerts without filter."""
-        params = GrafanaGetAlertsInput()
-        result = await incident_grafana_get_alerts(params)
-        data = json.loads(result)
+    async def test_returns_error_when_grafana_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.grafana_tools.get_grafana_client",
+            side_effect=GrafanaUnavailableError("not configured"),
+        ):
+            params = GrafanaGetAlertsInput()
+            result = await incident_grafana_get_alerts(params)
+            data = json.loads(result)
+            assert data["error"] == "Grafana not configured"
 
-        assert "alerts" in data
-        assert "total" in data
-        assert data["total"] >= 2
-
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_get_firing_alerts(self, mock_httpx_client) -> None:
-        """Should filter to only firing alerts."""
-        params = GrafanaGetAlertsInput(state="firing")
-        result = await incident_grafana_get_alerts(params)
-        data = json.loads(result)
+    async def test_retrieves_alerts_via_api(self) -> None:
+        api_alerts = [
+            {
+                "labels": {"alertname": "HighCPU", "severity": "critical"},
+                "state": "firing",
+            },
+        ]
+        respx.get(
+            f"{GRAFANA_BASE}/api/alertmanager/grafana/api/v2/alerts"
+        ).mock(return_value=httpx.Response(200, json=api_alerts))
+        with patch(
+            "mcp_servers.incident_mcp.tools.grafana_tools.get_grafana_client",
+            return_value=httpx.AsyncClient(base_url=GRAFANA_BASE),
+        ):
+            params = GrafanaGetAlertsInput(state="firing")
+            result = await incident_grafana_get_alerts(params)
+            data = json.loads(result)
 
-        assert data["total"] >= 1
-        for alert in data["alerts"]:
-            assert alert["state"] == "firing"
+            assert data["total"] == 1
+            assert data["alerts"][0]["labels"]["alertname"] == "HighCPU"
 
 
 class TestGrafanaGetDashboard:
     """Tests for incident_grafana_get_dashboard tool."""
 
     @pytest.mark.asyncio
-    async def test_get_dashboard(self, mock_httpx_client) -> None:
-        """Should return dashboard structure with panels."""
-        params = GrafanaGetDashboardInput(dashboard_uid="infra-overview")
-        result = await incident_grafana_get_dashboard(params)
-        data = json.loads(result)
+    async def test_returns_error_when_grafana_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.grafana_tools.get_grafana_client",
+            side_effect=GrafanaUnavailableError("not configured"),
+        ):
+            params = GrafanaGetDashboardInput(dashboard_uid="abc123")
+            result = await incident_grafana_get_dashboard(params)
+            data = json.loads(result)
+            assert data["error"] == "Grafana not configured"
 
-        assert "dashboard" in data
-        assert data["dashboard"]["uid"] == "infra-overview"
-        assert len(data["dashboard"]["panels"]) >= 3
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_retrieves_dashboard_via_api(self) -> None:
+        api_response = {
+            "dashboard": {
+                "uid": "abc123",
+                "title": "Infra Overview",
+                "panels": [{"id": 1, "title": "CPU"}],
+            }
+        }
+        respx.get(f"{GRAFANA_BASE}/api/dashboards/uid/abc123").mock(
+            return_value=httpx.Response(200, json=api_response)
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.grafana_tools.get_grafana_client",
+            return_value=httpx.AsyncClient(base_url=GRAFANA_BASE),
+        ):
+            params = GrafanaGetDashboardInput(dashboard_uid="abc123")
+            result = await incident_grafana_get_dashboard(params)
+            data = json.loads(result)
 
-    def test_dashboard_input_validation(self) -> None:
-        """Should reject empty UID."""
+            assert data["dashboard"]["uid"] == "abc123"
+
+    def test_input_validation_rejects_empty_uid(self) -> None:
         with pytest.raises(ValidationError):
             GrafanaGetDashboardInput(dashboard_uid="")
 
@@ -322,50 +467,81 @@ class TestPagerDutyListIncidents:
     """Tests for incident_pagerduty_list_incidents tool."""
 
     @pytest.mark.asyncio
-    async def test_list_incidents_default(self, mock_httpx_client) -> None:
-        """Should list incidents with default filters."""
-        params = PagerDutyListIncidentsInput()
-        result = await incident_pagerduty_list_incidents(params)
-        data = json.loads(result)
+    async def test_returns_error_when_pd_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.pagerduty_tools.get_pagerduty_client",
+            side_effect=PagerDutyUnavailableError("not configured"),
+        ):
+            params = PagerDutyListIncidentsInput()
+            result = await incident_pagerduty_list_incidents(params)
+            data = json.loads(result)
+            assert data["error"] == "PagerDuty not configured"
+            assert "INFRA_AGENT_PAGERDUTY_TOKEN" in data["hint"]
 
-        assert "incidents" in data
-        assert "total" in data
-        assert data["total"] >= 1
-
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_list_triggered_incidents(self, mock_httpx_client) -> None:
-        """Should filter to only triggered incidents."""
-        params = PagerDutyListIncidentsInput(status="triggered")
-        result = await incident_pagerduty_list_incidents(params)
-        data = json.loads(result)
+    async def test_lists_incidents_via_api(self) -> None:
+        api_response = {
+            "incidents": [
+                {
+                    "id": "P1ABC",
+                    "title": "API latency",
+                    "status": "triggered",
+                }
+            ],
+            "more": False,
+        }
+        respx.get(f"{PD_BASE}/incidents").mock(
+            return_value=httpx.Response(200, json=api_response)
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.pagerduty_tools.get_pagerduty_client",
+            return_value=httpx.AsyncClient(base_url=PD_BASE),
+        ):
+            params = PagerDutyListIncidentsInput(
+                status="triggered", limit=10
+            )
+            result = await incident_pagerduty_list_incidents(params)
+            data = json.loads(result)
 
-        for inc in data["incidents"]:
-            assert inc["status"] == "triggered"
-
-    @pytest.mark.asyncio
-    async def test_list_incidents_respects_limit(self, mock_httpx_client) -> None:
-        """Should respect the limit parameter."""
-        params = PagerDutyListIncidentsInput(status="triggered,acknowledged", limit=1)
-        result = await incident_pagerduty_list_incidents(params)
-        data = json.loads(result)
-        assert len(data["incidents"]) <= 1
+            assert data["total"] == 1
+            assert data["incidents"][0]["id"] == "P1ABC"
 
 
 class TestPagerDutyAcknowledge:
     """Tests for incident_pagerduty_acknowledge tool."""
 
     @pytest.mark.asyncio
-    async def test_acknowledge_incident(self, mock_httpx_client) -> None:
-        """Should acknowledge an incident in mock mode."""
-        params = PagerDutyAcknowledgeInput(incident_id="P1ABC23")
-        result = await incident_pagerduty_acknowledge(params)
-        data = json.loads(result)
+    async def test_returns_error_when_pd_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.pagerduty_tools.get_pagerduty_client",
+            side_effect=PagerDutyUnavailableError("not configured"),
+        ):
+            params = PagerDutyAcknowledgeInput(incident_id="P1ABC")
+            result = await incident_pagerduty_acknowledge(params)
+            data = json.loads(result)
+            assert data["error"] == "PagerDuty not configured"
 
-        assert data["incident"]["id"] == "P1ABC23"
-        assert data["incident"]["status"] == "acknowledged"
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_acknowledges_incident_via_api(self) -> None:
+        api_response = {
+            "incident": {"id": "P1ABC", "status": "acknowledged"}
+        }
+        respx.put(f"{PD_BASE}/incidents/P1ABC").mock(
+            return_value=httpx.Response(200, json=api_response)
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.pagerduty_tools.get_pagerduty_client",
+            return_value=httpx.AsyncClient(base_url=PD_BASE),
+        ):
+            params = PagerDutyAcknowledgeInput(incident_id="P1ABC")
+            result = await incident_pagerduty_acknowledge(params)
+            data = json.loads(result)
 
-    def test_acknowledge_input_validation(self) -> None:
-        """Should reject empty incident ID."""
+            assert data["incident"]["status"] == "acknowledged"
+
+    def test_input_validation_rejects_empty_id(self) -> None:
         with pytest.raises(ValidationError):
             PagerDutyAcknowledgeInput(incident_id="")
 
@@ -374,17 +550,34 @@ class TestPagerDutyResolve:
     """Tests for incident_pagerduty_resolve tool."""
 
     @pytest.mark.asyncio
-    async def test_resolve_incident(self, mock_httpx_client) -> None:
-        """Should resolve an incident in mock mode."""
-        params = PagerDutyResolveInput(incident_id="P2DEF45")
-        result = await incident_pagerduty_resolve(params)
-        data = json.loads(result)
+    async def test_returns_error_when_pd_unavailable(self) -> None:
+        with patch(
+            "mcp_servers.incident_mcp.tools.pagerduty_tools.get_pagerduty_client",
+            side_effect=PagerDutyUnavailableError("not configured"),
+        ):
+            params = PagerDutyResolveInput(incident_id="P2DEF")
+            result = await incident_pagerduty_resolve(params)
+            data = json.loads(result)
+            assert data["error"] == "PagerDuty not configured"
 
-        assert data["incident"]["id"] == "P2DEF45"
-        assert data["incident"]["status"] == "resolved"
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_resolves_incident_via_api(self) -> None:
+        api_response = {"incident": {"id": "P2DEF", "status": "resolved"}}
+        respx.put(f"{PD_BASE}/incidents/P2DEF").mock(
+            return_value=httpx.Response(200, json=api_response)
+        )
+        with patch(
+            "mcp_servers.incident_mcp.tools.pagerduty_tools.get_pagerduty_client",
+            return_value=httpx.AsyncClient(base_url=PD_BASE),
+        ):
+            params = PagerDutyResolveInput(incident_id="P2DEF")
+            result = await incident_pagerduty_resolve(params)
+            data = json.loads(result)
 
-    def test_resolve_input_validation(self) -> None:
-        """Should reject empty incident ID."""
+            assert data["incident"]["status"] == "resolved"
+
+    def test_input_validation_rejects_empty_id(self) -> None:
         with pytest.raises(ValidationError):
             PagerDutyResolveInput(incident_id="")
 
@@ -398,10 +591,10 @@ class TestGenerateRCA:
     """Tests for incident_generate_rca tool."""
 
     @pytest.mark.asyncio
-    async def test_generate_basic_rca(self, mock_httpx_client) -> None:
+    async def test_generate_basic_rca(self) -> None:
         """Should generate an RCA report with summary only."""
         params = GenerateRCAInput(
-            incident_summary=("API latency spike caused by CPU exhaustion on api-server-01"),
+            incident_summary="API latency spike caused by CPU exhaustion",
         )
         result = await incident_generate_rca(params)
 
@@ -414,7 +607,7 @@ class TestGenerateRCA:
         assert "## Prevention" in result
 
     @pytest.mark.asyncio
-    async def test_generate_rca_with_metrics(self, mock_httpx_client) -> None:
+    async def test_generate_rca_with_metrics(self) -> None:
         """Should include metrics data in the report."""
         metrics = json.dumps({"cpu_usage": 94.2, "memory_usage": 78.5})
         params = GenerateRCAInput(
@@ -427,7 +620,7 @@ class TestGenerateRCA:
         assert "cpu_usage" in result
 
     @pytest.mark.asyncio
-    async def test_generate_rca_with_tickets(self, mock_httpx_client) -> None:
+    async def test_generate_rca_with_tickets(self) -> None:
         """Should include related tickets in the report."""
         tickets = json.dumps(
             [
@@ -450,7 +643,7 @@ class TestGenerateRCA:
         assert "INFRA-101" in result
 
     @pytest.mark.asyncio
-    async def test_generate_rca_with_timeline(self, mock_httpx_client) -> None:
+    async def test_generate_rca_with_timeline(self) -> None:
         """Should include timeline in the report."""
         timeline = json.dumps(
             [
@@ -472,11 +665,13 @@ class TestGenerateRCA:
         assert "On-call paged" in result
 
     @pytest.mark.asyncio
-    async def test_generate_rca_full(self, mock_httpx_client) -> None:
+    async def test_generate_rca_full(self) -> None:
         """Should generate a full RCA with all fields populated."""
         params = GenerateRCAInput(
             incident_summary="Redis cluster failover in us-east-1",
-            metrics_data=json.dumps({"latency_p99": 5200, "error_rate": 12.5}),
+            metrics_data=json.dumps(
+                {"latency_p99": 5200, "error_rate": 12.5}
+            ),
             related_tickets=json.dumps(
                 [
                     {

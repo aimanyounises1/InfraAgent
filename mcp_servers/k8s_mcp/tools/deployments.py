@@ -8,16 +8,13 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from kubernetes import client
-
-from config import settings
 from mcp_servers.k8s_mcp.models import (  # noqa: TCH001
     K8sListDeploymentsInput,
     K8sRestartDeploymentInput,
     K8sScaleDeploymentInput,
 )
 from mcp_servers.k8s_mcp.server import mcp
-from mcp_servers.k8s_mcp.utils import get_clients, get_mock_deployments
+from mcp_servers.k8s_mcp.utils import K8sUnavailableError, get_clients
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +77,9 @@ def _serialize_deployment(deploy: Any) -> dict[str, Any]:
         "openWorldHint": True,
     },
 )
-async def k8s_list_deployments(params: K8sListDeploymentsInput) -> str:
+async def k8s_list_deployments(
+    params: K8sListDeploymentsInput,
+) -> str:
     """List deployments in a namespace with replica counts and rollout status."""
     logger.debug(
         "k8s_list_deployments called",
@@ -90,22 +89,22 @@ async def k8s_list_deployments(params: K8sListDeploymentsInput) -> str:
         },
     )
 
-    if settings.mock_k8s:
-        logger.info("k8s_list_deployments using mock data")
-        deployments = get_mock_deployments(
-            namespace=params.namespace,
-            label_selector=params.label_selector,
-        )
-        result = {
-            "namespace": params.namespace,
-            "deployment_count": len(deployments),
-            "deployments": deployments,
-        }
-        return json.dumps(result, indent=2, default=str)
-
     try:
         _, apps_v1 = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning("k8s_list_deployments: cluster unavailable")
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": (
+                    "Install kubectl and configure cluster access."
+                ),
+            },
+            indent=2,
+        )
 
+    try:
         kwargs: dict[str, Any] = {"namespace": params.namespace}
         if params.label_selector:
             kwargs["label_selector"] = params.label_selector
@@ -115,7 +114,9 @@ async def k8s_list_deployments(params: K8sListDeploymentsInput) -> str:
             **kwargs,
         )
 
-        deployments = [_serialize_deployment(d) for d in deploy_list.items]
+        deployments = [
+            _serialize_deployment(d) for d in deploy_list.items
+        ]
         result = {
             "namespace": params.namespace,
             "deployment_count": len(deployments),
@@ -127,33 +128,21 @@ async def k8s_list_deployments(params: K8sListDeploymentsInput) -> str:
         )
         return json.dumps(result, indent=2, default=str)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_list_deployments API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        error = {
-            "error": "Kubernetes API error",
-            "status": e.status,
-            "reason": e.reason,
-            "details": (
-                f"Failed to list deployments in namespace '{params.namespace}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_list_deployments unexpected error",
+            "k8s_list_deployments error",
             extra={"error": str(e)},
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": (
-                f"Failed to list deployments in namespace '{params.namespace}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    "Failed to list deployments in namespace "
+                    f"'{params.namespace}'"
+                ),
+            },
+            indent=2,
+        )
 
 
 @mcp.tool(
@@ -166,7 +155,9 @@ async def k8s_list_deployments(params: K8sListDeploymentsInput) -> str:
         "openWorldHint": True,
     },
 )
-async def k8s_scale_deployment(params: K8sScaleDeploymentInput) -> str:
+async def k8s_scale_deployment(
+    params: K8sScaleDeploymentInput,
+) -> str:
     """Scale a deployment to the specified number of replicas."""
     logger.debug(
         "k8s_scale_deployment called",
@@ -177,39 +168,22 @@ async def k8s_scale_deployment(params: K8sScaleDeploymentInput) -> str:
         },
     )
 
-    if settings.mock_k8s:
-        logger.info("k8s_scale_deployment using mock data")
-        # Find the mock deployment to report old replicas
-        deployments = get_mock_deployments(namespace=params.namespace)
-        old_replicas = 0
-        found = False
-        for d in deployments:
-            if d["name"] == params.deployment_name:
-                old_replicas = d["replicas"]
-                found = True
-                break
-
-        if not found:
-            error = {
-                "error": "Deployment not found",
-                "deployment_name": params.deployment_name,
-                "namespace": params.namespace,
-            }
-            return json.dumps(error, indent=2, default=str)
-
-        result = {
-            "action": "scale",
-            "deployment": params.deployment_name,
-            "namespace": params.namespace,
-            "previous_replicas": old_replicas,
-            "new_replicas": params.replicas,
-            "status": "scaled",
-        }
-        return json.dumps(result, indent=2, default=str)
-
     try:
         _, apps_v1 = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning("k8s_scale_deployment: cluster unavailable")
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": (
+                    "Install kubectl and configure cluster access."
+                ),
+            },
+            indent=2,
+        )
 
+    try:
         # Read current state for reporting
         current = await asyncio.to_thread(
             apps_v1.read_namespaced_deployment,
@@ -245,40 +219,21 @@ async def k8s_scale_deployment(params: K8sScaleDeploymentInput) -> str:
         )
         return json.dumps(result, indent=2, default=str)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_scale_deployment API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        if e.status == 404:
-            error = {
-                "error": "Deployment not found",
-                "deployment_name": params.deployment_name,
-                "namespace": params.namespace,
-            }
-        else:
-            error = {
-                "error": "Kubernetes API error",
-                "status": e.status,
-                "reason": e.reason,
-                "details": (
-                    f"Failed to scale deployment '{params.deployment_name}'"
-                ),
-            }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_scale_deployment unexpected error",
+            "k8s_scale_deployment error",
             extra={"error": str(e)},
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": (
-                f"Failed to scale deployment '{params.deployment_name}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    "Failed to scale deployment "
+                    f"'{params.deployment_name}'"
+                ),
+            },
+            indent=2,
+        )
 
 
 @mcp.tool(
@@ -291,7 +246,9 @@ async def k8s_scale_deployment(params: K8sScaleDeploymentInput) -> str:
         "openWorldHint": True,
     },
 )
-async def k8s_restart_deployment(params: K8sRestartDeploymentInput) -> str:
+async def k8s_restart_deployment(
+    params: K8sRestartDeploymentInput,
+) -> str:
     """Perform a rolling restart of a deployment."""
     logger.debug(
         "k8s_restart_deployment called",
@@ -301,42 +258,35 @@ async def k8s_restart_deployment(params: K8sRestartDeploymentInput) -> str:
         },
     )
 
-    restart_time = datetime.now(tz=UTC).isoformat()
-
-    if settings.mock_k8s:
-        logger.info("k8s_restart_deployment using mock data")
-        deployments = get_mock_deployments(namespace=params.namespace)
-        found = any(
-            d["name"] == params.deployment_name for d in deployments
-        )
-
-        if not found:
-            error = {
-                "error": "Deployment not found",
-                "deployment_name": params.deployment_name,
-                "namespace": params.namespace,
-            }
-            return json.dumps(error, indent=2, default=str)
-
-        result = {
-            "action": "rolling_restart",
-            "deployment": params.deployment_name,
-            "namespace": params.namespace,
-            "restart_triggered_at": restart_time,
-            "status": "restarting",
-        }
-        return json.dumps(result, indent=2, default=str)
-
     try:
         _, apps_v1 = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning(
+            "k8s_restart_deployment: cluster unavailable"
+        )
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": (
+                    "Install kubectl and configure cluster access."
+                ),
+            },
+            indent=2,
+        )
 
-        # Trigger rolling restart by patching the pod template annotation
+    restart_time = datetime.now(tz=UTC).isoformat()
+
+    try:
+        # Trigger rolling restart via pod template annotation
         body = {
             "spec": {
                 "template": {
                     "metadata": {
                         "annotations": {
-                            "kubectl.kubernetes.io/restartedAt": restart_time,
+                            "kubectl.kubernetes.io/restartedAt": (
+                                restart_time
+                            ),
                         }
                     }
                 }
@@ -366,38 +316,18 @@ async def k8s_restart_deployment(params: K8sRestartDeploymentInput) -> str:
         )
         return json.dumps(result, indent=2, default=str)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_restart_deployment API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        if e.status == 404:
-            error = {
-                "error": "Deployment not found",
-                "deployment_name": params.deployment_name,
-                "namespace": params.namespace,
-            }
-        else:
-            error = {
-                "error": "Kubernetes API error",
-                "status": e.status,
-                "reason": e.reason,
-                "details": (
-                    f"Failed to restart deployment "
-                    f"'{params.deployment_name}'"
-                ),
-            }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_restart_deployment unexpected error",
+            "k8s_restart_deployment error",
             extra={"error": str(e)},
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": (
-                f"Failed to restart deployment '{params.deployment_name}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    "Failed to restart deployment "
+                    f"'{params.deployment_name}'"
+                ),
+            },
+            indent=2,
+        )

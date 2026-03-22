@@ -30,45 +30,87 @@ def _mock_llm_analysis():
 
 
 # ---------------------------------------------------------------------------
-# Kubernetes Mocks
+# Kubernetes Mocks -- patches get_clients() where it is used (in tool modules)
 # ---------------------------------------------------------------------------
+
+# Patch targets: must patch where get_clients is USED, not where defined,
+# because `from mcp_servers.k8s_mcp.utils import get_clients` creates a
+# local name binding that is not affected by patching the utils module.
+_K8S_TOOL_MODULES = [
+    "mcp_servers.k8s_mcp.tools.pods.get_clients",
+    "mcp_servers.k8s_mcp.tools.deployments.get_clients",
+    "mcp_servers.k8s_mcp.tools.services.get_clients",
+    "mcp_servers.k8s_mcp.tools.logs.get_clients",
+]
 
 
 @pytest.fixture
 def mock_k8s_core_v1():
-    """Mock kubernetes CoreV1Api client."""
-    with patch("mcp_servers.k8s_mcp.utils.client.CoreV1Api") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+    """Mock kubernetes CoreV1Api via get_clients.
 
-        # Default: return one healthy pod
-        mock_pod = MagicMock()
-        mock_pod.metadata.name = "test-pod-abc123"
-        mock_pod.metadata.namespace = "default"
-        mock_pod.status.phase = "Running"
-        mock_pod.status.pod_ip = "10.0.0.1"
-        mock_pod.spec.node_name = "node-1"
-        mock_client.list_namespaced_pod.return_value.items = [mock_pod]
+    Returns the mock CoreV1Api instance so tests can configure
+    return values on its methods (list_namespaced_pod, etc.).
+    """
+    mock_v1 = MagicMock()
 
-        yield mock_client
+    # Default: return one healthy pod
+    mock_pod = MagicMock()
+    mock_pod.metadata.name = "test-pod-abc123"
+    mock_pod.metadata.namespace = "default"
+    mock_pod.metadata.labels = {"app": "test"}
+    mock_pod.status.phase = "Running"
+    mock_pod.status.pod_ip = "10.0.0.1"
+    mock_pod.status.start_time = "2026-03-22T07:00:00Z"
+    mock_pod.status.conditions = []
+    mock_pod.status.container_statuses = []
+    mock_pod.spec.node_name = "node-1"
+    mock_v1.list_namespaced_pod.return_value.items = [mock_pod]
+
+    mock_apps = MagicMock()
+    patches = [
+        patch(target, return_value=(mock_v1, mock_apps))
+        for target in _K8S_TOOL_MODULES
+    ]
+    for p in patches:
+        p.start()
+    yield mock_v1
+    for p in patches:
+        p.stop()
 
 
 @pytest.fixture
 def mock_k8s_apps_v1():
-    """Mock kubernetes AppsV1Api client."""
-    with patch("mcp_servers.k8s_mcp.utils.client.AppsV1Api") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
+    """Mock kubernetes AppsV1Api via get_clients.
 
-        mock_deploy = MagicMock()
-        mock_deploy.metadata.name = "nginx"
-        mock_deploy.metadata.namespace = "default"
-        mock_deploy.spec.replicas = 3
-        mock_deploy.status.ready_replicas = 3
-        mock_deploy.status.available_replicas = 3
-        mock_client.list_namespaced_deployment.return_value.items = [mock_deploy]
+    Returns the mock AppsV1Api instance so tests can configure
+    return values on its methods (list_namespaced_deployment, etc.).
+    """
+    mock_v1 = MagicMock()
+    mock_apps = MagicMock()
 
-        yield mock_client
+    mock_deploy = MagicMock()
+    mock_deploy.metadata.name = "nginx"
+    mock_deploy.metadata.namespace = "default"
+    mock_deploy.metadata.labels = {"app": "nginx"}
+    mock_deploy.spec.replicas = 3
+    mock_deploy.spec.strategy.type = "RollingUpdate"
+    mock_deploy.status.ready_replicas = 3
+    mock_deploy.status.available_replicas = 3
+    mock_deploy.status.updated_replicas = 3
+    mock_deploy.status.conditions = []
+    mock_apps.list_namespaced_deployment.return_value.items = [
+        mock_deploy
+    ]
+
+    patches = [
+        patch(target, return_value=(mock_v1, mock_apps))
+        for target in _K8S_TOOL_MODULES
+    ]
+    for p in patches:
+        p.start()
+    yield mock_apps
+    for p in patches:
+        p.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +125,16 @@ def mock_nvml():
         mock.nvmlDeviceGetCount.return_value = 2
         handle = MagicMock()
         mock.nvmlDeviceGetHandleByIndex.return_value = handle
-        mock.nvmlDeviceGetUtilizationRates.return_value = MagicMock(gpu=75, memory=60)
+        mock.nvmlDeviceGetUtilizationRates.return_value = MagicMock(
+            gpu=75, memory=60
+        )
         mock.nvmlDeviceGetMemoryInfo.return_value = MagicMock(
-            total=80 * 1024**3, used=48 * 1024**3, free=32 * 1024**3
+            total=80 * 1024**3,
+            used=48 * 1024**3,
+            free=32 * 1024**3,
         )
         mock.nvmlDeviceGetTemperature.return_value = 62
-        mock.nvmlDeviceGetPowerUsage.return_value = 285_000  # milliwatts
+        mock.nvmlDeviceGetPowerUsage.return_value = 285_000
         mock.nvmlDeviceGetEnforcedPowerLimit.return_value = 400_000
         yield mock
 

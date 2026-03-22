@@ -1,1 +1,1 @@
-"""gpu_mcp tools — monitoring, processes, and health checks."""
+"""gpu_mcp tools — NVML monitoring, DCGM diagnostics, NVLink topology, NCCL profiling."""

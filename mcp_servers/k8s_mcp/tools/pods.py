@@ -7,21 +7,13 @@ import json
 import logging
 from typing import Any
 
-from kubernetes import client
-
-from config import settings
 from mcp_servers.k8s_mcp.models import (  # noqa: TCH001
     K8sDescribePodInput,
     K8sExecCommandInput,
     K8sListPodsInput,
 )
 from mcp_servers.k8s_mcp.server import mcp
-from mcp_servers.k8s_mcp.utils import (
-    get_clients,
-    get_mock_exec_output,
-    get_mock_pod_detail,
-    get_mock_pods,
-)
+from mcp_servers.k8s_mcp.utils import K8sUnavailableError, get_clients
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +44,9 @@ def _serialize_pod(pod: Any) -> dict[str, Any]:
                     )
                 elif cs.state.waiting:
                     container_info["state"] = "waiting"
-                    container_info["reason"] = cs.state.waiting.reason or ""
+                    container_info["reason"] = (
+                        cs.state.waiting.reason or ""
+                    )
                 elif cs.state.terminated:
                     container_info["state"] = "terminated"
                     container_info["reason"] = (
@@ -100,22 +94,20 @@ async def k8s_list_pods(params: K8sListPodsInput) -> str:
         },
     )
 
-    if settings.mock_k8s:
-        logger.info("k8s_list_pods using mock data")
-        pods = get_mock_pods(
-            namespace=params.namespace,
-            label_selector=params.label_selector,
-        )
-        result = {
-            "namespace": params.namespace,
-            "pod_count": len(pods[: params.limit]),
-            "pods": pods[: params.limit],
-        }
-        return json.dumps(result, indent=2, default=str)
-
     try:
         v1, _ = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning("k8s_list_pods: cluster unavailable")
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": "Install kubectl and configure cluster access.",
+            },
+            indent=2,
+        )
 
+    try:
         kwargs: dict[str, Any] = {
             "namespace": params.namespace,
             "limit": params.limit,
@@ -139,32 +131,20 @@ async def k8s_list_pods(params: K8sListPodsInput) -> str:
         )
         return json.dumps(result, indent=2, default=str)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_list_pods API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        error = {
-            "error": "Kubernetes API error",
-            "status": e.status,
-            "reason": e.reason,
-            "details": (
-                f"Failed to list pods in namespace '{params.namespace}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_list_pods unexpected error", extra={"error": str(e)}
+            "k8s_list_pods error", extra={"error": str(e)}
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": (
-                f"Failed to list pods in namespace '{params.namespace}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    f"Failed to list pods in namespace "
+                    f"'{params.namespace}'"
+                ),
+            },
+            indent=2,
+        )
 
 
 @mcp.tool(
@@ -187,23 +167,20 @@ async def k8s_describe_pod(params: K8sDescribePodInput) -> str:
         },
     )
 
-    if settings.mock_k8s:
-        logger.info("k8s_describe_pod using mock data")
-        detail = get_mock_pod_detail(
-            name=params.pod_name, namespace=params.namespace
-        )
-        if detail is None:
-            error = {
-                "error": "Pod not found",
-                "pod_name": params.pod_name,
-                "namespace": params.namespace,
-            }
-            return json.dumps(error, indent=2, default=str)
-        return _format_pod_detail_markdown(detail)
-
     try:
         v1, _ = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning("k8s_describe_pod: cluster unavailable")
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": "Install kubectl and configure cluster access.",
+            },
+            indent=2,
+        )
 
+    try:
         pod = await asyncio.to_thread(
             v1.read_namespaced_pod,
             name=params.pod_name,
@@ -250,41 +227,26 @@ async def k8s_describe_pod(params: K8sDescribePodInput) -> str:
         )
         return _format_pod_detail_markdown(pod_data)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_describe_pod API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        if e.status == 404:
-            error = {
-                "error": "Pod not found",
-                "pod_name": params.pod_name,
-                "namespace": params.namespace,
-            }
-        else:
-            error = {
-                "error": "Kubernetes API error",
-                "status": e.status,
-                "reason": e.reason,
-            }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_describe_pod unexpected error", extra={"error": str(e)}
+            "k8s_describe_pod error", extra={"error": str(e)}
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": f"Failed to describe pod '{params.pod_name}'",
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    f"Failed to describe pod '{params.pod_name}'"
+                ),
+            },
+            indent=2,
+        )
 
 
 def _format_pod_detail_markdown(pod: dict[str, Any]) -> str:
     """Format pod detail data as a Markdown string.
 
     Args:
-        pod: Pod detail dictionary (from mock or real API).
+        pod: Pod detail dictionary from real API.
 
     Returns:
         Markdown-formatted string with pod information.
@@ -316,7 +278,9 @@ def _format_pod_detail_markdown(pod: dict[str, Any]) -> str:
             lines.append(f"- **Image:** {c.get('image', 'N/A')}")
             lines.append(f"- **Ready:** {c.get('ready', 'N/A')}")
             lines.append(f"- **State:** {c.get('state', 'N/A')}")
-            lines.append(f"- **Restart Count:** {c.get('restart_count', 0)}")
+            lines.append(
+                f"- **Restart Count:** {c.get('restart_count', 0)}"
+            )
             if c.get("reason"):
                 lines.append(f"- **Reason:** {c['reason']}")
             if c.get("started_at"):
@@ -370,22 +334,21 @@ async def k8s_exec_command(params: K8sExecCommandInput) -> str:
         },
     )
 
-    if settings.mock_k8s:
-        logger.info("k8s_exec_command using mock data")
-        output = get_mock_exec_output(params.command)
-        result = {
-            "pod": params.pod_name,
-            "namespace": params.namespace,
-            "command": params.command,
-            "output": output,
-            "exit_code": 0,
-        }
-        return json.dumps(result, indent=2, default=str)
+    try:
+        v1, _ = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning("k8s_exec_command: cluster unavailable")
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": "Install kubectl and configure cluster access.",
+            },
+            indent=2,
+        )
 
     try:
         from kubernetes.stream import stream
-
-        v1, _ = get_clients()
 
         kwargs: dict[str, Any] = {
             "name": params.pod_name,
@@ -418,27 +381,17 @@ async def k8s_exec_command(params: K8sExecCommandInput) -> str:
         )
         return json.dumps(result, indent=2, default=str)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_exec_command API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        error = {
-            "error": "Kubernetes API error",
-            "status": e.status,
-            "reason": e.reason,
-            "details": f"Failed to exec in pod '{params.pod_name}'",
-        }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_exec_command unexpected error", extra={"error": str(e)}
+            "k8s_exec_command error", extra={"error": str(e)}
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": (
-                f"Failed to exec command in pod '{params.pod_name}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    f"Failed to exec command in pod "
+                    f"'{params.pod_name}'"
+                ),
+            },
+            indent=2,
+        )

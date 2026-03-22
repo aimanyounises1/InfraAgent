@@ -1,11 +1,15 @@
-"""PagerDuty alert tools for incident_mcp."""
+"""PagerDuty alert tools for incident_mcp.
+
+All tools auto-detect PagerDuty availability by attempting to create an
+authenticated client.  When PagerDuty is not configured the tool returns
+a structured JSON error instead of raising.
+"""
 
 import json
 import logging
 
 import httpx
 
-from config import settings
 from mcp_servers.incident_mcp.models import (
     PagerDutyAcknowledgeInput,
     PagerDutyListIncidentsInput,
@@ -13,11 +17,23 @@ from mcp_servers.incident_mcp.models import (
 )
 from mcp_servers.incident_mcp.server import mcp
 from mcp_servers.incident_mcp.utils import (
-    get_mock_pd_incidents,
+    PagerDutyUnavailableError,
     get_pagerduty_client,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _pd_unavailable_response(exc: PagerDutyUnavailableError) -> str:
+    """Return a standardised JSON error when PagerDuty is not configured."""
+    return json.dumps(
+        {
+            "error": "PagerDuty not configured",
+            "detail": str(exc),
+            "hint": "Set INFRA_AGENT_PAGERDUTY_TOKEN in .env",
+        },
+        indent=2,
+    )
 
 
 @mcp.tool(
@@ -37,20 +53,14 @@ async def incident_pagerduty_list_incidents(
         extra={"status": params.status, "limit": params.limit},
     )
 
-    if settings.mock_pagerduty:
-        logger.debug("Using mock mode for PagerDuty list incidents")
-        incidents = get_mock_pd_incidents(status=params.status or "")
-        limited = incidents[: params.limit]
-        result = {
-            "incidents": limited,
-            "total": len(limited),
-            "more": len(incidents) > params.limit,
-        }
-        return json.dumps(result, indent=2, default=str)
-
-    # Real PagerDuty API call
     try:
-        async with get_pagerduty_client() as client:
+        client = get_pagerduty_client()
+    except PagerDutyUnavailableError as exc:
+        logger.warning("PagerDuty unavailable: %s", exc)
+        return _pd_unavailable_response(exc)
+
+    try:
+        async with client:
             query_params: dict[str, str | int] = {"limit": params.limit}
             if params.status:
                 # PagerDuty API accepts statuses[] as repeated params
@@ -58,9 +68,9 @@ async def incident_pagerduty_list_incidents(
 
             resp = await client.get("/incidents", params=query_params)
             resp.raise_for_status()
-            data = resp.json()
-            incidents = data.get("incidents", [])
-            result = {
+            data: dict = resp.json()
+            incidents: list = data.get("incidents", [])
+            result: dict = {
                 "incidents": incidents,
                 "total": len(incidents),
                 "more": data.get("more", False),
@@ -123,20 +133,14 @@ async def incident_pagerduty_acknowledge(
         extra={"incident_id": params.incident_id},
     )
 
-    if settings.mock_pagerduty:
-        logger.debug("Using mock mode for PagerDuty acknowledge")
-        result = {
-            "incident": {
-                "id": params.incident_id,
-                "status": "acknowledged",
-                "message": (f"Incident {params.incident_id} acknowledged successfully (mock mode)"),
-            },
-        }
-        return json.dumps(result, indent=2, default=str)
-
-    # Real PagerDuty API call
     try:
-        async with get_pagerduty_client() as client:
+        client = get_pagerduty_client()
+    except PagerDutyUnavailableError as exc:
+        logger.warning("PagerDuty unavailable: %s", exc)
+        return _pd_unavailable_response(exc)
+
+    try:
+        async with client:
             payload = {
                 "incident": {
                     "id": params.incident_id,
@@ -149,7 +153,7 @@ async def incident_pagerduty_acknowledge(
                 json=payload,
             )
             resp.raise_for_status()
-            data = resp.json()
+            data: dict = resp.json()
             logger.info(
                 "PagerDuty incident acknowledged",
                 extra={"incident_id": params.incident_id},
@@ -206,20 +210,14 @@ async def incident_pagerduty_resolve(params: PagerDutyResolveInput) -> str:
         extra={"incident_id": params.incident_id},
     )
 
-    if settings.mock_pagerduty:
-        logger.debug("Using mock mode for PagerDuty resolve")
-        result = {
-            "incident": {
-                "id": params.incident_id,
-                "status": "resolved",
-                "message": (f"Incident {params.incident_id} resolved successfully (mock mode)"),
-            },
-        }
-        return json.dumps(result, indent=2, default=str)
-
-    # Real PagerDuty API call
     try:
-        async with get_pagerduty_client() as client:
+        client = get_pagerduty_client()
+    except PagerDutyUnavailableError as exc:
+        logger.warning("PagerDuty unavailable: %s", exc)
+        return _pd_unavailable_response(exc)
+
+    try:
+        async with client:
             payload = {
                 "incident": {
                     "id": params.incident_id,
@@ -232,7 +230,7 @@ async def incident_pagerduty_resolve(params: PagerDutyResolveInput) -> str:
                 json=payload,
             )
             resp.raise_for_status()
-            data = resp.json()
+            data: dict = resp.json()
             logger.info(
                 "PagerDuty incident resolved",
                 extra={"incident_id": params.incident_id},

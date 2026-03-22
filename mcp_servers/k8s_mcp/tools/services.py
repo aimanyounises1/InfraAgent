@@ -7,12 +7,9 @@ import json
 import logging
 from typing import Any
 
-from kubernetes import client
-
-from config import settings
 from mcp_servers.k8s_mcp.models import K8sListServicesInput  # noqa: TCH001
 from mcp_servers.k8s_mcp.server import mcp
-from mcp_servers.k8s_mcp.utils import get_clients, get_mock_services
+from mcp_servers.k8s_mcp.utils import K8sUnavailableError, get_clients
 
 logger = logging.getLogger(__name__)
 
@@ -84,19 +81,22 @@ async def k8s_list_services(params: K8sListServicesInput) -> str:
         extra={"namespace": params.namespace},
     )
 
-    if settings.mock_k8s:
-        logger.info("k8s_list_services using mock data")
-        services = get_mock_services(namespace=params.namespace)
-        result = {
-            "namespace": params.namespace,
-            "service_count": len(services),
-            "services": services,
-        }
-        return json.dumps(result, indent=2, default=str)
-
     try:
         v1, _ = get_clients()
+    except K8sUnavailableError as e:
+        logger.warning("k8s_list_services: cluster unavailable")
+        return json.dumps(
+            {
+                "error": "Kubernetes not available",
+                "detail": str(e),
+                "hint": (
+                    "Install kubectl and configure cluster access."
+                ),
+            },
+            indent=2,
+        )
 
+    try:
         svc_list = await asyncio.to_thread(
             v1.list_namespaced_service,
             namespace=params.namespace,
@@ -114,29 +114,17 @@ async def k8s_list_services(params: K8sListServicesInput) -> str:
         )
         return json.dumps(result, indent=2, default=str)
 
-    except client.ApiException as e:
-        logger.error(
-            "k8s_list_services API error",
-            extra={"status": e.status, "reason": e.reason},
-        )
-        error = {
-            "error": "Kubernetes API error",
-            "status": e.status,
-            "reason": e.reason,
-            "details": (
-                f"Failed to list services in namespace '{params.namespace}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
     except Exception as e:
         logger.error(
-            "k8s_list_services unexpected error", extra={"error": str(e)}
+            "k8s_list_services error", extra={"error": str(e)}
         )
-        error = {
-            "error": "Unexpected error",
-            "message": str(e),
-            "details": (
-                f"Failed to list services in namespace '{params.namespace}'"
-            ),
-        }
-        return json.dumps(error, indent=2, default=str)
+        return json.dumps(
+            {
+                "error": f"K8s API error: {e}",
+                "details": (
+                    "Failed to list services in namespace "
+                    f"'{params.namespace}'"
+                ),
+            },
+            indent=2,
+        )
