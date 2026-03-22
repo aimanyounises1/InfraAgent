@@ -74,7 +74,7 @@ export default function useInfraAgent() {
         throw new Error(`Failed to fetch pods: ${res.status} ${res.statusText}`);
       }
       const data = await res.json();
-      setPods(data);
+      setPods(data?.data || data);
       return data;
     } catch (err) {
       setError(err.message);
@@ -97,7 +97,7 @@ export default function useInfraAgent() {
         throw new Error(`Failed to fetch deployments: ${res.status} ${res.statusText}`);
       }
       const data = await res.json();
-      setDeployments(data);
+      setDeployments(data?.data || data);
       return data;
     } catch (err) {
       setError(err.message);
@@ -119,7 +119,12 @@ export default function useInfraAgent() {
         throw new Error(`Failed to fetch GPU status: ${res.status} ${res.statusText}`);
       }
       const data = await res.json();
-      setGpuStatus(data);
+      // Prefer cluster_summary.devices (has utilization/temp/memory/power)
+      // over top-level devices (only has name/driver)
+      const csDevices = data?.cluster_summary?.devices || [];
+      const devices = csDevices.length > 0 ? csDevices : (data?.devices || []);
+      const summary = data?.cluster_summary || {};
+      setGpuStatus({ devices, cluster_summary: summary });
       return data;
     } catch (err) {
       setError(err.message);
@@ -141,7 +146,7 @@ export default function useInfraAgent() {
         throw new Error(`Failed to fetch GPU health: ${res.status} ${res.statusText}`);
       }
       const data = await res.json();
-      setGpuHealth(data);
+      setGpuHealth(data?.data || data);
       return data;
     } catch (err) {
       setError(err.message);
@@ -163,7 +168,19 @@ export default function useInfraAgent() {
         throw new Error(`Failed to fetch incidents: ${res.status} ${res.statusText}`);
       }
       const data = await res.json();
-      setIncidents(data);
+      // Merge PagerDuty incidents and Grafana alerts into a unified list
+      const pdIncidents = (data?.pagerduty?.incidents || []).map((inc) => ({
+        ...inc, source: 'PagerDuty',
+      }));
+      const grafanaAlerts = (data?.grafana_alerts?.alerts || []).map((a) => ({
+        title: a.labels?.alertname || 'Alert',
+        status: a.state || a.status?.state || 'unknown',
+        severity: a.labels?.severity || 'info',
+        source: 'Grafana',
+        created_at: a.activeAt || a.startsAt || '',
+        ...a,
+      }));
+      setIncidents([...pdIncidents, ...grafanaAlerts]);
       return data;
     } catch (err) {
       setError(err.message);
