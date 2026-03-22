@@ -1,7 +1,7 @@
-"""Kubernetes client helpers — handles in-cluster and local kubeconfig.
+"""Kubernetes client helpers -- handles in-cluster and local kubeconfig.
 
 When INFRA_AGENT_MOCK_K8S=true, provides realistic simulated Kubernetes data
-so the project can demo without a real cluster.
+reflecting a local development environment on a MacBook Pro M4 Max.
 """
 
 from __future__ import annotations
@@ -49,28 +49,28 @@ def get_clients() -> tuple[client.CoreV1Api, client.AppsV1Api]:
 
 
 # ---------------------------------------------------------------------------
-# Mock Data -- Pods
+# Mock Data -- Pods (local dev environment on MacBook Pro M4 Max)
 # ---------------------------------------------------------------------------
 
 MOCK_PODS: list[dict[str, Any]] = [
     {
-        "name": "nginx-deployment-7c79c4bf97-abc12",
+        "name": "ollama-server-0",
         "namespace": "default",
         "status": "Running",
-        "pod_ip": "10.244.1.15",
-        "node": "node-1",
-        "labels": {"app": "nginx", "tier": "frontend"},
+        "pod_ip": "10.244.0.10",
+        "node": "macbook-m4-max",
+        "labels": {"app": "ollama", "tier": "inference"},
         "containers": [
             {
-                "name": "nginx",
-                "image": "nginx:1.25.3",
+                "name": "ollama",
+                "image": "ollama/ollama:0.6.2",
                 "ready": True,
                 "restart_count": 0,
                 "state": "running",
-                "started_at": "2026-03-21T08:00:00Z",
+                "started_at": "2026-03-21T07:00:00Z",
             }
         ],
-        "start_time": "2026-03-21T08:00:00Z",
+        "start_time": "2026-03-21T07:00:00Z",
         "conditions": [
             {"type": "Ready", "status": "True"},
             {"type": "ContainersReady", "status": "True"},
@@ -78,23 +78,71 @@ MOCK_PODS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "redis-master-0",
+        "name": "infra-agent-api-7b9d4f6c8a-xk2p1",
         "namespace": "default",
         "status": "Running",
-        "pod_ip": "10.244.2.22",
-        "node": "node-2",
-        "labels": {"app": "redis", "role": "master"},
+        "pod_ip": "10.244.0.11",
+        "node": "macbook-m4-max",
+        "labels": {"app": "infra-agent-api", "tier": "backend"},
+        "containers": [
+            {
+                "name": "api",
+                "image": "infra-agent/api:latest",
+                "ready": True,
+                "restart_count": 0,
+                "state": "running",
+                "started_at": "2026-03-21T07:05:00Z",
+            }
+        ],
+        "start_time": "2026-03-21T07:05:00Z",
+        "conditions": [
+            {"type": "Ready", "status": "True"},
+            {"type": "ContainersReady", "status": "True"},
+            {"type": "PodScheduled", "status": "True"},
+        ],
+    },
+    {
+        "name": "vite-dashboard-5c8e3a7d9b-mv4n8",
+        "namespace": "default",
+        "status": "Running",
+        "pod_ip": "10.244.0.12",
+        "node": "macbook-m4-max",
+        "labels": {"app": "dashboard", "tier": "frontend"},
+        "containers": [
+            {
+                "name": "dashboard",
+                "image": "infra-agent/dashboard:latest",
+                "ready": True,
+                "restart_count": 0,
+                "state": "running",
+                "started_at": "2026-03-21T07:10:00Z",
+            }
+        ],
+        "start_time": "2026-03-21T07:10:00Z",
+        "conditions": [
+            {"type": "Ready", "status": "True"},
+            {"type": "ContainersReady", "status": "True"},
+            {"type": "PodScheduled", "status": "True"},
+        ],
+    },
+    {
+        "name": "redis-cache-0",
+        "namespace": "default",
+        "status": "Running",
+        "pod_ip": "10.244.0.13",
+        "node": "macbook-m4-max",
+        "labels": {"app": "redis", "tier": "cache"},
         "containers": [
             {
                 "name": "redis",
                 "image": "redis:7.2-alpine",
                 "ready": True,
-                "restart_count": 1,
+                "restart_count": 0,
                 "state": "running",
-                "started_at": "2026-03-20T12:30:00Z",
+                "started_at": "2026-03-21T06:55:00Z",
             }
         ],
-        "start_time": "2026-03-20T12:30:00Z",
+        "start_time": "2026-03-21T06:55:00Z",
         "conditions": [
             {"type": "Ready", "status": "True"},
             {"type": "ContainersReady", "status": "True"},
@@ -102,50 +150,18 @@ MOCK_PODS: list[dict[str, Any]] = [
         ],
     },
     {
-        "name": "api-server-deployment-5d8f9b6c4-def45",
-        "namespace": "default",
-        "status": "Running",
-        "pod_ip": "10.244.1.30",
-        "node": "node-1",
-        "labels": {"app": "api-server", "tier": "backend"},
-        "containers": [
-            {
-                "name": "api-server",
-                "image": "myregistry/api-server:v2.1.0",
-                "ready": True,
-                "restart_count": 0,
-                "state": "running",
-                "started_at": "2026-03-21T09:15:00Z",
-            },
-            {
-                "name": "sidecar-proxy",
-                "image": "envoyproxy/envoy:v1.28.0",
-                "ready": True,
-                "restart_count": 0,
-                "state": "running",
-                "started_at": "2026-03-21T09:15:05Z",
-            },
-        ],
-        "start_time": "2026-03-21T09:15:00Z",
-        "conditions": [
-            {"type": "Ready", "status": "True"},
-            {"type": "ContainersReady", "status": "True"},
-            {"type": "PodScheduled", "status": "True"},
-        ],
-    },
-    {
-        "name": "worker-batch-job-ghi01",
+        "name": "langgraph-worker-3f7a2b8c1d-qz9w5",
         "namespace": "default",
         "status": "CrashLoopBackOff",
-        "pod_ip": "10.244.3.8",
-        "node": "node-3",
-        "labels": {"app": "worker", "tier": "backend"},
+        "pod_ip": "10.244.0.14",
+        "node": "macbook-m4-max",
+        "labels": {"app": "langgraph-worker", "tier": "backend"},
         "containers": [
             {
                 "name": "worker",
-                "image": "myregistry/worker:v1.5.2",
+                "image": "infra-agent/langgraph-worker:latest",
                 "ready": False,
-                "restart_count": 7,
+                "restart_count": 3,
                 "state": "waiting",
                 "reason": "CrashLoopBackOff",
                 "started_at": "2026-03-22T01:00:00Z",
@@ -158,30 +174,6 @@ MOCK_PODS: list[dict[str, Any]] = [
             {"type": "PodScheduled", "status": "True"},
         ],
     },
-    {
-        "name": "monitoring-prometheus-0",
-        "namespace": "monitoring",
-        "status": "Running",
-        "pod_ip": "10.244.2.50",
-        "node": "node-2",
-        "labels": {"app": "prometheus", "tier": "monitoring"},
-        "containers": [
-            {
-                "name": "prometheus",
-                "image": "prom/prometheus:v2.51.0",
-                "ready": True,
-                "restart_count": 0,
-                "state": "running",
-                "started_at": "2026-03-19T06:00:00Z",
-            }
-        ],
-        "start_time": "2026-03-19T06:00:00Z",
-        "conditions": [
-            {"type": "Ready", "status": "True"},
-            {"type": "ContainersReady", "status": "True"},
-            {"type": "PodScheduled", "status": "True"},
-        ],
-    },
 ]
 
 
@@ -191,13 +183,33 @@ MOCK_PODS: list[dict[str, Any]] = [
 
 MOCK_DEPLOYMENTS: list[dict[str, Any]] = [
     {
-        "name": "nginx-deployment",
+        "name": "ollama-deployment",
         "namespace": "default",
-        "replicas": 3,
-        "ready_replicas": 3,
-        "available_replicas": 3,
-        "updated_replicas": 3,
-        "labels": {"app": "nginx"},
+        "replicas": 1,
+        "ready_replicas": 1,
+        "available_replicas": 1,
+        "updated_replicas": 1,
+        "labels": {"app": "ollama"},
+        "strategy": "Recreate",
+        "conditions": [
+            {
+                "type": "Available",
+                "status": "True",
+                "reason": "MinimumReplicasAvailable",
+                "message": "Deployment has minimum availability.",
+            },
+        ],
+        "image": "ollama/ollama:0.6.2",
+        "created_at": "2026-03-18T10:00:00Z",
+    },
+    {
+        "name": "infra-agent-api",
+        "namespace": "default",
+        "replicas": 2,
+        "ready_replicas": 2,
+        "available_replicas": 2,
+        "updated_replicas": 2,
+        "labels": {"app": "infra-agent-api"},
         "strategy": "RollingUpdate",
         "conditions": [
             {
@@ -213,17 +225,17 @@ MOCK_DEPLOYMENTS: list[dict[str, Any]] = [
                 "message": "ReplicaSet has successfully progressed.",
             },
         ],
-        "image": "nginx:1.25.3",
-        "created_at": "2026-03-15T10:00:00Z",
+        "image": "infra-agent/api:latest",
+        "created_at": "2026-03-19T14:00:00Z",
     },
     {
-        "name": "api-server-deployment",
+        "name": "dashboard-frontend",
         "namespace": "default",
-        "replicas": 2,
-        "ready_replicas": 2,
-        "available_replicas": 2,
-        "updated_replicas": 2,
-        "labels": {"app": "api-server"},
+        "replicas": 1,
+        "ready_replicas": 1,
+        "available_replicas": 1,
+        "updated_replicas": 1,
+        "labels": {"app": "dashboard"},
         "strategy": "RollingUpdate",
         "conditions": [
             {
@@ -233,28 +245,8 @@ MOCK_DEPLOYMENTS: list[dict[str, Any]] = [
                 "message": "Deployment has minimum availability.",
             },
         ],
-        "image": "myregistry/api-server:v2.1.0",
-        "created_at": "2026-03-18T14:00:00Z",
-    },
-    {
-        "name": "redis-deployment",
-        "namespace": "default",
-        "replicas": 1,
-        "ready_replicas": 1,
-        "available_replicas": 1,
-        "updated_replicas": 1,
-        "labels": {"app": "redis"},
-        "strategy": "Recreate",
-        "conditions": [
-            {
-                "type": "Available",
-                "status": "True",
-                "reason": "MinimumReplicasAvailable",
-                "message": "Deployment has minimum availability.",
-            },
-        ],
-        "image": "redis:7.2-alpine",
-        "created_at": "2026-03-10T08:00:00Z",
+        "image": "infra-agent/dashboard:latest",
+        "created_at": "2026-03-19T14:30:00Z",
     },
 ]
 
@@ -273,16 +265,41 @@ MOCK_SERVICES: list[dict[str, Any]] = [
         "selector": None,
     },
     {
-        "name": "nginx-svc",
+        "name": "ollama-svc",
+        "namespace": "default",
+        "type": "ClusterIP",
+        "cluster_ip": "10.96.10.50",
+        "ports": [
+            {"port": 11434, "target_port": 11434, "protocol": "TCP"},
+        ],
+        "selector": {"app": "ollama"},
+    },
+    {
+        "name": "infra-agent-api-svc",
+        "namespace": "default",
+        "type": "NodePort",
+        "cluster_ip": "10.96.20.100",
+        "ports": [
+            {
+                "name": "http",
+                "port": 8000,
+                "target_port": 8000,
+                "node_port": 30080,
+                "protocol": "TCP",
+            }
+        ],
+        "selector": {"app": "infra-agent-api"},
+    },
+    {
+        "name": "dashboard-svc",
         "namespace": "default",
         "type": "LoadBalancer",
-        "cluster_ip": "10.96.12.100",
-        "external_ip": "203.0.113.50",
+        "cluster_ip": "10.96.30.150",
+        "external_ip": "127.0.0.1",
         "ports": [
-            {"name": "http", "port": 80, "target_port": 80, "protocol": "TCP"},
-            {"name": "https", "port": 443, "target_port": 443, "protocol": "TCP"},
+            {"name": "http", "port": 3000, "target_port": 3000, "protocol": "TCP"},
         ],
-        "selector": {"app": "nginx"},
+        "selector": {"app": "dashboard"},
     },
     {
         "name": "redis-svc",
@@ -292,70 +309,27 @@ MOCK_SERVICES: list[dict[str, Any]] = [
         "ports": [{"port": 6379, "target_port": 6379, "protocol": "TCP"}],
         "selector": {"app": "redis"},
     },
-    {
-        "name": "api-svc",
-        "namespace": "default",
-        "type": "NodePort",
-        "cluster_ip": "10.96.78.150",
-        "ports": [
-            {
-                "name": "http",
-                "port": 8080,
-                "target_port": 8080,
-                "node_port": 30080,
-                "protocol": "TCP",
-            }
-        ],
-        "selector": {"app": "api-server"},
-    },
-    {
-        "name": "prometheus-svc",
-        "namespace": "monitoring",
-        "type": "ClusterIP",
-        "cluster_ip": "10.96.90.10",
-        "ports": [{"port": 9090, "target_port": 9090, "protocol": "TCP"}],
-        "selector": {"app": "prometheus"},
-    },
 ]
 
 
 # ---------------------------------------------------------------------------
-# Mock Data -- Nodes
+# Mock Data -- Nodes (single MacBook Pro M4 Max)
 # ---------------------------------------------------------------------------
 
 MOCK_NODES: list[dict[str, Any]] = [
     {
-        "name": "node-1",
+        "name": "macbook-m4-max",
         "status": "Ready",
         "roles": ["control-plane", "worker"],
-        "cpu_capacity": "8",
-        "memory_capacity": "32Gi",
-        "cpu_allocatable": "7500m",
-        "memory_allocatable": "30Gi",
-        "os_image": "Ubuntu 22.04.4 LTS",
-        "kubelet_version": "v1.29.2",
-    },
-    {
-        "name": "node-2",
-        "status": "Ready",
-        "roles": ["worker"],
         "cpu_capacity": "16",
         "memory_capacity": "64Gi",
         "cpu_allocatable": "15500m",
         "memory_allocatable": "62Gi",
-        "os_image": "Ubuntu 22.04.4 LTS",
-        "kubelet_version": "v1.29.2",
-    },
-    {
-        "name": "node-3",
-        "status": "Ready",
-        "roles": ["worker"],
-        "cpu_capacity": "16",
-        "memory_capacity": "64Gi",
-        "cpu_allocatable": "15500m",
-        "memory_allocatable": "62Gi",
-        "os_image": "Ubuntu 22.04.4 LTS",
-        "kubelet_version": "v1.29.2",
+        "os_image": "macOS 26.3.0 (Tahoe)",
+        "kubelet_version": "v1.31.0",
+        "architecture": "arm64",
+        "container_runtime": "containerd://1.7.14",
+        "disk_capacity": "1Ti",
     },
 ]
 
@@ -368,65 +342,67 @@ MOCK_EVENTS: list[dict[str, Any]] = [
     {
         "type": "Normal",
         "reason": "Scheduled",
-        "object": "Pod/nginx-deployment-7c79c4bf97-abc12",
+        "object": "Pod/ollama-server-0",
         "message": (
-            "Successfully assigned default/nginx-deployment-7c79c4bf97-abc12 to node-1"
+            "Successfully assigned default/ollama-server-0 to macbook-m4-max"
         ),
-        "first_seen": "2026-03-21T08:00:00Z",
-        "last_seen": "2026-03-21T08:00:00Z",
+        "first_seen": "2026-03-21T07:00:00Z",
+        "last_seen": "2026-03-21T07:00:00Z",
         "count": 1,
         "namespace": "default",
     },
     {
         "type": "Normal",
         "reason": "Pulled",
-        "object": "Pod/nginx-deployment-7c79c4bf97-abc12",
-        "message": "Container image 'nginx:1.25.3' already present on machine",
-        "first_seen": "2026-03-21T08:00:01Z",
-        "last_seen": "2026-03-21T08:00:01Z",
+        "object": "Pod/ollama-server-0",
+        "message": "Container image 'ollama/ollama:0.6.2' already present on machine",
+        "first_seen": "2026-03-21T07:00:01Z",
+        "last_seen": "2026-03-21T07:00:01Z",
         "count": 1,
         "namespace": "default",
     },
     {
         "type": "Normal",
         "reason": "Started",
-        "object": "Pod/nginx-deployment-7c79c4bf97-abc12",
-        "message": "Started container nginx",
-        "first_seen": "2026-03-21T08:00:02Z",
-        "last_seen": "2026-03-21T08:00:02Z",
+        "object": "Pod/ollama-server-0",
+        "message": "Started container ollama",
+        "first_seen": "2026-03-21T07:00:02Z",
+        "last_seen": "2026-03-21T07:00:02Z",
         "count": 1,
         "namespace": "default",
     },
     {
         "type": "Warning",
         "reason": "BackOff",
-        "object": "Pod/worker-batch-job-ghi01",
+        "object": "Pod/langgraph-worker-3f7a2b8c1d-qz9w5",
         "message": (
             "Back-off restarting failed container worker "
-            "in pod worker-batch-job-ghi01"
+            "in pod langgraph-worker-3f7a2b8c1d-qz9w5"
         ),
         "first_seen": "2026-03-22T01:05:00Z",
         "last_seen": "2026-03-22T06:30:00Z",
-        "count": 42,
+        "count": 12,
         "namespace": "default",
     },
     {
         "type": "Warning",
         "reason": "Unhealthy",
-        "object": "Pod/worker-batch-job-ghi01",
+        "object": "Pod/langgraph-worker-3f7a2b8c1d-qz9w5",
         "message": "Liveness probe failed: connection refused",
         "first_seen": "2026-03-22T01:02:00Z",
         "last_seen": "2026-03-22T06:28:00Z",
-        "count": 38,
+        "count": 9,
         "namespace": "default",
     },
     {
         "type": "Normal",
         "reason": "ScalingReplicaSet",
-        "object": "Deployment/nginx-deployment",
-        "message": "Scaled up replica set nginx-deployment-7c79c4bf97 to 3",
-        "first_seen": "2026-03-15T10:00:00Z",
-        "last_seen": "2026-03-15T10:00:00Z",
+        "object": "Deployment/infra-agent-api",
+        "message": (
+            "Scaled up replica set infra-agent-api-7b9d4f6c8a to 2"
+        ),
+        "first_seen": "2026-03-19T14:00:00Z",
+        "last_seen": "2026-03-19T14:00:00Z",
         "count": 1,
         "namespace": "default",
     },
@@ -438,56 +414,50 @@ MOCK_EVENTS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 _MOCK_LOG_LINES: dict[str, list[str]] = {
-    "nginx": [
-        '10.244.0.1 - - [22/Mar/2026:08:15:01 +0000] "GET / HTTP/1.1" 200 615 "-" "curl/8.5.0"',
-        (
-            '10.244.0.1 - - [22/Mar/2026:08:15:02 +0000] "GET /healthz HTTP/1.1"'
-            ' 200 2 "-" "kube-probe/1.29"'
-        ),
-        (
-            '10.244.0.5 - - [22/Mar/2026:08:15:05 +0000] "GET /api/v1/status HTTP/1.1"'
-            ' 200 128 "-" "python-requests/2.31"'
-        ),
-        (
-            '10.244.0.1 - - [22/Mar/2026:08:15:10 +0000] "POST /api/v1/data HTTP/1.1"'
-            ' 201 64 "-" "python-requests/2.31"'
-        ),
-        (
-            '10.244.0.1 - - [22/Mar/2026:08:15:15 +0000] "GET /healthz HTTP/1.1"'
-            ' 200 2 "-" "kube-probe/1.29"'
-        ),
-        (
-            '10.244.0.8 - - [22/Mar/2026:08:15:20 +0000]'
-            ' "GET /static/main.css HTTP/1.1" 304 0 "-" "Mozilla/5.0"'
-        ),
-        '10.244.0.1 - - [22/Mar/2026:08:15:25 +0000] "GET / HTTP/1.1" 200 615 "-" "curl/8.5.0"',
+    "ollama": [
+        "time=2026-03-22T08:00:00Z level=INFO msg=\"Listening on 0.0.0.0:11434\"",
+        "time=2026-03-22T08:00:01Z level=INFO msg=\"Loading model qwen2.5-coder:14b\"",
+        "time=2026-03-22T08:00:05Z level=INFO msg=\"Model loaded in 4.2s\"",
+        "time=2026-03-22T08:15:00Z level=INFO msg=\"Inference request\" model=qwen2.5-coder:14b",
+        "time=2026-03-22T08:15:02Z level=INFO msg=\"Generation complete\" tokens=342 time=1.8s",
+        "time=2026-03-22T08:15:10Z level=INFO msg=\"Health check OK\"",
+        "time=2026-03-22T08:15:30Z level=INFO msg=\"Inference request\" model=qwen2.5-coder:14b",
+    ],
+    "infra-agent-api": [
+        "2026-03-22 08:05:00 INFO  [uvicorn] Application startup complete",
+        "2026-03-22 08:05:01 INFO  [main] Connected to Redis at redis-svc:6379",
+        "2026-03-22 08:05:01 INFO  [main] MCP servers registered: k8s, gpu, incident",
+        "2026-03-22 08:05:02 INFO  [main] LangGraph agent initialised (ollama backend)",
+        "2026-03-22 08:15:10 INFO  [http] GET /healthz 200 1ms",
+        "2026-03-22 08:15:15 INFO  [http] POST /api/chat 200 1842ms",
+        "2026-03-22 08:15:20 INFO  [http] GET /api/gpu/status 200 45ms",
+        "2026-03-22 08:15:25 INFO  [http] GET /api/k8s/pods 200 12ms",
+    ],
+    "dashboard": [
+        "  VITE v6.2.0  ready in 320 ms",
+        "",
+        "  -> Local:   http://localhost:3000/",
+        "  -> Network: http://10.244.0.12:3000/",
+        "",
+        "08:10:05 [vite] page reload src/App.tsx",
+        "08:15:00 [vite] hmr update /src/components/GpuPanel.tsx",
     ],
     "redis": [
-        "1:C 22 Mar 2026 08:00:00.000 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo",
-        "1:C 22 Mar 2026 08:00:00.001 # Redis version=7.2.4, bits=64, commit=00000000",
-        "1:M 22 Mar 2026 08:00:00.002 * Running mode=standalone, port=6379.",
-        "1:M 22 Mar 2026 08:00:00.003 # Server initialized",
-        "1:M 22 Mar 2026 08:00:00.004 * Ready to accept connections tcp",
+        "1:C 22 Mar 2026 06:55:00.000 # oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo",
+        "1:C 22 Mar 2026 06:55:00.001 # Redis version=7.2.4, bits=64, commit=00000000",
+        "1:M 22 Mar 2026 06:55:00.002 * Running mode=standalone, port=6379.",
+        "1:M 22 Mar 2026 06:55:00.003 # Server initialized",
+        "1:M 22 Mar 2026 06:55:00.004 * Ready to accept connections tcp",
         "1:M 22 Mar 2026 08:15:00.000 * 1 changes in 900 seconds. Saving...",
         "1:M 22 Mar 2026 08:15:00.050 * Background saving started by pid 42",
         "42:C 22 Mar 2026 08:15:00.100 * DB saved on disk",
         "1:M 22 Mar 2026 08:15:00.150 * Background saving terminated with success",
     ],
-    "api-server": [
-        "2026-03-22 08:15:00 INFO  [main] Application starting on port 8080",
-        "2026-03-22 08:15:01 INFO  [main] Connected to database postgres://db:5432/app",
-        "2026-03-22 08:15:01 INFO  [main] Redis cache connected at redis-svc:6379",
-        "2026-03-22 08:15:02 INFO  [main] Application ready, accepting requests",
-        "2026-03-22 08:15:10 INFO  [http] GET /health 200 1ms",
-        "2026-03-22 08:15:15 INFO  [http] POST /api/v1/users 201 45ms",
-        "2026-03-22 08:15:20 WARN  [http] GET /api/v1/orders?page=999 - empty result set",
-        "2026-03-22 08:15:25 INFO  [http] GET /api/v1/products 200 12ms",
-    ],
-    "worker": [
-        "2026-03-22 01:00:00 INFO  Starting worker process...",
-        "2026-03-22 01:00:01 INFO  Connecting to message queue...",
-        "2026-03-22 01:00:02 ERROR Failed to connect to rabbitmq://rabbitmq-svc:5672",
-        "2026-03-22 01:00:02 ERROR ConnectionRefusedError: [Errno 111] Connection refused",
+    "langgraph-worker": [
+        "2026-03-22 01:00:00 INFO  Starting LangGraph worker process...",
+        "2026-03-22 01:00:01 INFO  Connecting to Redis at redis-svc:6379...",
+        "2026-03-22 01:00:02 ERROR Failed to initialise LangGraph checkpoint store",
+        "2026-03-22 01:00:02 ERROR RuntimeError: Missing INFRA_AGENT_LLM_PROVIDER config",
         "2026-03-22 01:00:02 FATAL Unrecoverable error, shutting down",
         "2026-03-22 01:00:03 INFO  Worker process exited with code 1",
     ],
@@ -507,7 +477,7 @@ def get_mock_pods(
 
     Args:
         namespace: Kubernetes namespace to filter by.
-        label_selector: Optional label selector string (e.g., 'app=nginx').
+        label_selector: Optional label selector string (e.g., 'app=ollama').
 
     Returns:
         List of pod dictionaries matching the filter criteria.
@@ -696,7 +666,7 @@ def get_mock_exec_output(command: list[str]) -> str:
         return "root\n"
 
     if cmd == "hostname":
-        return "nginx-deployment-7c79c4bf97-abc12\n"
+        return "infra-agent-api-7b9d4f6c8a-xk2p1\n"
 
     if cmd == "date":
         return f"{now_str}\n"
@@ -704,7 +674,7 @@ def get_mock_exec_output(command: list[str]) -> str:
     if cmd == "env":
         return (
             "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-            "HOSTNAME=nginx-deployment-7c79c4bf97-abc12\n"
+            "HOSTNAME=infra-agent-api-7b9d4f6c8a-xk2p1\n"
             "KUBERNETES_SERVICE_HOST=10.96.0.1\n"
             "KUBERNETES_SERVICE_PORT=443\n"
             "HOME=/root\n"
@@ -714,9 +684,9 @@ def get_mock_exec_output(command: list[str]) -> str:
         return (
             "PID   USER     TIME  COMMAND\n"
             "    1 root      0:00 /entrypoint.sh\n"
-            "   12 root      0:05 nginx: master process\n"
-            "   13 nginx     0:12 nginx: worker process\n"
-            "   14 nginx     0:11 nginx: worker process\n"
+            "   12 root      0:05 uvicorn api.main:app --host 0.0.0.0\n"
+            "   13 root      0:12 python -m mcp_servers.gpu_mcp.server\n"
+            "   14 root      0:11 python -m mcp_servers.k8s_mcp.server\n"
         )
 
     # Generic fallback

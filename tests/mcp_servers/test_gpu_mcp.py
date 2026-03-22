@@ -2,6 +2,9 @@
 
 All tests run in MOCK_MODE (INFRA_AGENT_MOCK_GPU=true) by default.
 The mock_nvml fixture from conftest.py is available for pynvml patching tests.
+
+Mock mode now returns real macOS system metrics via psutil, presented as
+four Apple Silicon virtual devices.
 """
 
 from __future__ import annotations
@@ -32,14 +35,14 @@ class TestGpuUtils:
     """Tests for gpu_mcp utility functions."""
 
     def test_mock_gpu_data_generation(self) -> None:
-        """Mock mode should generate realistic GPU data."""
+        """Mock mode should generate realistic system data."""
         info = get_mock_gpu_info(0)
         assert 0 <= info.gpu_utilization <= 100
         assert info.total_memory_mb > 0
         assert info.power_limit_w > 0
 
     def test_mock_gpu_count(self) -> None:
-        """Should return the expected number of mock GPUs."""
+        """Should return the expected number of virtual devices."""
         count = get_mock_gpu_count()
         assert count == 4
 
@@ -47,13 +50,20 @@ class TestGpuUtils:
         """Index modulo should wrap around for out-of-range indices."""
         info_0 = get_mock_gpu_info(0)
         info_4 = get_mock_gpu_info(4)
-        # Same base GPU, but values are randomized so just check name
+        # Same base device after wrap
         assert info_0.name == info_4.name
+
+    def test_mock_gpu_info_names(self) -> None:
+        """Each device should have an Apple M4 Max name."""
+        for i in range(4):
+            info = get_mock_gpu_info(i)
+            assert "Apple M4 Max" in info.name
 
     def test_mock_processes_returns_list(self) -> None:
         """get_mock_processes should return a list of process dicts."""
         procs = get_mock_processes(0)
         assert isinstance(procs, list)
+        # Real process list from psutil — should have at least 1 process
         assert len(procs) > 0
         for proc in procs:
             assert "pid" in proc
@@ -62,7 +72,7 @@ class TestGpuUtils:
             assert "type" in proc
 
     def test_mock_processes_empty_device(self) -> None:
-        """Device index 3 has no processes in the template."""
+        """Device index 3 (Neural Engine) has no visible processes."""
         procs = get_mock_processes(3)
         assert isinstance(procs, list)
         assert len(procs) == 0
@@ -78,9 +88,7 @@ class TestGpuUtils:
         assert "memory_total_mb" in health
 
     def test_mock_health_status_logic(self) -> None:
-        """Health status should reflect temperature and utilization rules."""
-        # Device 2 has high utilization (95) and temp (71)
-        # With randomization it could be warning or healthy — just check valid
+        """Health status should be a valid enum value."""
         health = get_mock_health(2)
         assert health["status"] in ("healthy", "warning", "critical")
 
@@ -103,7 +111,7 @@ class TestGpuListDevices:
 
     @pytest.mark.asyncio
     async def test_list_devices_returns_all(self) -> None:
-        """Should return all mock GPU devices."""
+        """Should return all virtual devices."""
         from mcp_servers.gpu_mcp.tools.monitor import gpu_list_devices
 
         result = await gpu_list_devices(GpuListDevicesInput())
@@ -131,7 +139,7 @@ class TestGpuGetUtilization:
 
     @pytest.mark.asyncio
     async def test_get_utilization(self) -> None:
-        """Should return GPU utilization percentage."""
+        """Should return utilization percentage."""
         from mcp_servers.gpu_mcp.tools.monitor import gpu_get_utilization
 
         result = await gpu_get_utilization(GpuDeviceIndexInput(device_index=0))
@@ -290,7 +298,7 @@ class TestGpuListProcesses:
 
     @pytest.mark.asyncio
     async def test_list_processes_empty_device(self) -> None:
-        """Device 3 has no processes in mock mode."""
+        """Device 3 (Neural Engine) has no processes."""
         from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
         result = await gpu_list_processes(GpuDeviceIndexInput(device_index=3))
@@ -368,7 +376,7 @@ class TestGpuMockMode:
     """Tests for mock/simulation mode."""
 
     def test_mock_gpu_data_generation(self) -> None:
-        """Mock mode should generate realistic GPU data."""
+        """Mock mode should generate realistic system data."""
         info = get_mock_gpu_info(0)
         assert 0 <= info.gpu_utilization <= 100
         assert info.total_memory_mb > 0

@@ -2,6 +2,10 @@
 
 All tests run with INFRA_AGENT_MOCK_K8S=true (the default) so they exercise
 the mock-data code paths without needing a real Kubernetes cluster.
+
+Mock data reflects a local dev environment on MacBook Pro M4 Max with
+pods: ollama-server, infra-agent-api, vite-dashboard, redis-cache,
+langgraph-worker (CrashLoopBackOff).
 """
 
 from __future__ import annotations
@@ -58,7 +62,7 @@ class TestK8sListPods:
 
         # Check that known mock pods are present
         pod_names = [p["name"] for p in result["pods"]]
-        assert any("nginx" in name for name in pod_names)
+        assert any("ollama" in name for name in pod_names)
         assert any("redis" in name for name in pod_names)
 
     @pytest.mark.asyncio
@@ -66,13 +70,13 @@ class TestK8sListPods:
         """Should filter pods by label selector."""
         from mcp_servers.k8s_mcp.tools.pods import k8s_list_pods
 
-        params = K8sListPodsInput(label_selector="app=nginx")
+        params = K8sListPodsInput(label_selector="app=ollama")
         result_str = await k8s_list_pods(params)
         result = json.loads(result_str)
 
         assert result["pod_count"] >= 1
         for pod in result["pods"]:
-            assert pod["labels"].get("app") == "nginx"
+            assert pod["labels"].get("app") == "ollama"
 
     @pytest.mark.asyncio
     async def test_list_pods_empty_namespace(self) -> None:
@@ -117,16 +121,16 @@ class TestK8sDescribePod:
         from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod
 
         params = K8sDescribePodInput(
-            pod_name="nginx-deployment-7c79c4bf97-abc12",
+            pod_name="ollama-server-0",
             namespace="default",
         )
         result_str = await k8s_describe_pod(params)
 
         # Markdown output should contain the pod name as a heading
-        assert "# Pod: nginx-deployment-7c79c4bf97-abc12" in result_str
+        assert "# Pod: ollama-server-0" in result_str
         assert "**Status:** Running" in result_str
         assert "## Containers" in result_str
-        assert "nginx" in result_str
+        assert "ollama" in result_str
 
     @pytest.mark.asyncio
     async def test_describe_pod_with_events(self) -> None:
@@ -134,7 +138,7 @@ class TestK8sDescribePod:
         from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod
 
         params = K8sDescribePodInput(
-            pod_name="worker-batch-job-ghi01",
+            pod_name="langgraph-worker-3f7a2b8c1d-qz9w5",
             namespace="default",
         )
         result_str = await k8s_describe_pod(params)
@@ -172,14 +176,14 @@ class TestK8sExecCommand:
         from mcp_servers.k8s_mcp.tools.pods import k8s_exec_command
 
         params = K8sExecCommandInput(
-            pod_name="nginx-deployment-7c79c4bf97-abc12",
+            pod_name="infra-agent-api-7b9d4f6c8a-xk2p1",
             namespace="default",
             command=["whoami"],
         )
         result_str = await k8s_exec_command(params)
         result = json.loads(result_str)
 
-        assert result["pod"] == "nginx-deployment-7c79c4bf97-abc12"
+        assert result["pod"] == "infra-agent-api-7b9d4f6c8a-xk2p1"
         assert result["exit_code"] == 0
         assert "root" in result["output"]
 
@@ -189,7 +193,7 @@ class TestK8sExecCommand:
         from mcp_servers.k8s_mcp.tools.pods import k8s_exec_command
 
         params = K8sExecCommandInput(
-            pod_name="nginx-deployment-7c79c4bf97-abc12",
+            pod_name="infra-agent-api-7b9d4f6c8a-xk2p1",
             namespace="default",
             command=["ls", "-la"],
         )
@@ -229,20 +233,20 @@ class TestK8sListDeployments:
         assert result["deployment_count"] > 0
 
         deploy_names = [d["name"] for d in result["deployments"]]
-        assert "nginx-deployment" in deploy_names
+        assert "ollama-deployment" in deploy_names
 
     @pytest.mark.asyncio
     async def test_list_deployments_with_label_selector(self) -> None:
         """Should filter deployments by label selector."""
         from mcp_servers.k8s_mcp.tools.deployments import k8s_list_deployments
 
-        params = K8sListDeploymentsInput(label_selector="app=redis")
+        params = K8sListDeploymentsInput(label_selector="app=ollama")
         result_str = await k8s_list_deployments(params)
         result = json.loads(result_str)
 
         assert result["deployment_count"] >= 1
         for d in result["deployments"]:
-            assert d["labels"].get("app") == "redis"
+            assert d["labels"].get("app") == "ollama"
 
     @pytest.mark.asyncio
     async def test_list_deployments_empty_namespace(self) -> None:
@@ -280,17 +284,17 @@ class TestK8sScaleDeployment:
         from mcp_servers.k8s_mcp.tools.deployments import k8s_scale_deployment
 
         params = K8sScaleDeploymentInput(
-            deployment_name="nginx-deployment",
+            deployment_name="ollama-deployment",
             namespace="default",
-            replicas=5,
+            replicas=3,
         )
         result_str = await k8s_scale_deployment(params)
         result = json.loads(result_str)
 
         assert result["action"] == "scale"
-        assert result["deployment"] == "nginx-deployment"
-        assert result["new_replicas"] == 5
-        assert result["previous_replicas"] == 3  # nginx mock has 3
+        assert result["deployment"] == "ollama-deployment"
+        assert result["new_replicas"] == 3
+        assert result["previous_replicas"] == 1  # ollama mock has 1
         assert result["status"] == "scaled"
 
     @pytest.mark.asyncio
@@ -311,12 +315,12 @@ class TestK8sScaleDeployment:
     def test_scale_input_validation(self) -> None:
         """Should reject replicas > 100."""
         with pytest.raises(ValidationError):
-            K8sScaleDeploymentInput(deployment_name="nginx", replicas=101)
+            K8sScaleDeploymentInput(deployment_name="ollama", replicas=101)
 
     def test_scale_input_validation_negative(self) -> None:
         """Should reject replicas < 0."""
         with pytest.raises(ValidationError):
-            K8sScaleDeploymentInput(deployment_name="nginx", replicas=-1)
+            K8sScaleDeploymentInput(deployment_name="ollama", replicas=-1)
 
 
 class TestK8sRestartDeployment:
@@ -328,14 +332,14 @@ class TestK8sRestartDeployment:
         from mcp_servers.k8s_mcp.tools.deployments import k8s_restart_deployment
 
         params = K8sRestartDeploymentInput(
-            deployment_name="nginx-deployment",
+            deployment_name="ollama-deployment",
             namespace="default",
         )
         result_str = await k8s_restart_deployment(params)
         result = json.loads(result_str)
 
         assert result["action"] == "rolling_restart"
-        assert result["deployment"] == "nginx-deployment"
+        assert result["deployment"] == "ollama-deployment"
         assert result["status"] == "restarting"
         assert "restart_triggered_at" in result
 
@@ -376,7 +380,6 @@ class TestK8sListServices:
 
         svc_names = [s["name"] for s in result["services"]]
         assert "kubernetes" in svc_names
-        assert "nginx-svc" in svc_names
         assert "redis-svc" in svc_names
 
     @pytest.mark.asyncio
@@ -428,28 +431,28 @@ class TestK8sGetPodLogs:
     """Tests for k8s_get_pod_logs tool."""
 
     @pytest.mark.asyncio
-    async def test_get_nginx_logs(self) -> None:
-        """Should return nginx-style log output."""
+    async def test_get_ollama_logs(self) -> None:
+        """Should return ollama-style log output."""
         from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
 
         params = K8sGetPodLogsInput(
-            pod_name="nginx-deployment-7c79c4bf97-abc12",
+            pod_name="ollama-server-0",
             namespace="default",
         )
         result_str = await k8s_get_pod_logs(params)
         result = json.loads(result_str)
 
-        assert result["pod"] == "nginx-deployment-7c79c4bf97-abc12"
+        assert result["pod"] == "ollama-server-0"
         assert result["log_lines"] > 0
-        assert "GET" in result["logs"]  # nginx access log pattern
+        assert "Listening" in result["logs"] or "Inference" in result["logs"]
 
     @pytest.mark.asyncio
     async def test_get_worker_logs_shows_errors(self) -> None:
-        """Should return error logs for crashing worker pod."""
+        """Should return error logs for crashing langgraph-worker pod."""
         from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
 
         params = K8sGetPodLogsInput(
-            pod_name="worker-batch-job-ghi01",
+            pod_name="langgraph-worker-3f7a2b8c1d-qz9w5",
             namespace="default",
         )
         result_str = await k8s_get_pod_logs(params)
@@ -463,7 +466,7 @@ class TestK8sGetPodLogs:
         from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
 
         params = K8sGetPodLogsInput(
-            pod_name="nginx-deployment-7c79c4bf97-abc12",
+            pod_name="ollama-server-0",
             namespace="default",
             tail_lines=3,
         )
@@ -479,7 +482,7 @@ class TestK8sGetPodLogs:
         from mcp_servers.k8s_mcp.tools.logs import k8s_get_pod_logs
 
         params = K8sGetPodLogsInput(
-            pod_name="redis-master-0",
+            pod_name="redis-cache-0",
             namespace="default",
             since_seconds=3600,
         )
@@ -529,11 +532,9 @@ class TestMockDataGenerators:
         from mcp_servers.k8s_mcp.utils import get_mock_pods
 
         default_pods = get_mock_pods(namespace="default")
-        monitoring_pods = get_mock_pods(namespace="monitoring")
 
         assert all(p["namespace"] == "default" for p in default_pods)
-        assert all(p["namespace"] == "monitoring" for p in monitoring_pods)
-        assert len(monitoring_pods) >= 1
+        assert len(default_pods) >= 1
 
     def test_get_mock_pods_filters_by_label(self) -> None:
         """Should filter by label selector."""
@@ -570,7 +571,7 @@ class TestMockDataGenerators:
         from mcp_servers.k8s_mcp.utils import get_mock_pod_detail
 
         detail = get_mock_pod_detail(
-            name="nginx-deployment-7c79c4bf97-abc12",
+            name="ollama-server-0",
             namespace="default",
         )
         assert detail is not None
@@ -588,10 +589,10 @@ class TestMockDataGenerators:
         """Should return logs matching the pod name prefix."""
         from mcp_servers.k8s_mcp.utils import get_mock_pod_logs
 
-        nginx_logs = get_mock_pod_logs(name="nginx-abc123")
-        assert "GET" in nginx_logs
+        ollama_logs = get_mock_pod_logs(name="ollama-server-0")
+        assert "Listening" in ollama_logs or "Inference" in ollama_logs
 
-        redis_logs = get_mock_pod_logs(name="redis-master-0")
+        redis_logs = get_mock_pod_logs(name="redis-cache-0")
         assert "Redis" in redis_logs
 
     def test_get_mock_exec_output(self) -> None:
