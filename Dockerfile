@@ -1,19 +1,29 @@
-# InfraAgent — Python backend
+# InfraAgent -- Python backend
 FROM python:3.11-slim AS base
 
 WORKDIR /app
 
-# Install system deps
+# Install system deps (build-essential for compiled Python packages)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps
+# Copy dependency manifest first for better layer caching
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e ".[dev]" 2>/dev/null || pip install --no-cache-dir .
 
-# Copy source
+# Install runtime dependencies plus Ollama provider (default LLM)
+# We use a two-step approach: install deps, then copy source and install in
+# editable mode so PYTHONPATH resolves all packages correctly.
+RUN pip install --no-cache-dir ".[ollama]"
+
+# Copy full source tree
 COPY . .
+
+# Re-install in editable mode so setuptools discovers the packages
+RUN pip install --no-cache-dir -e ".[ollama]"
+
+# Ensure `from config import settings` resolves from /app
+ENV PYTHONPATH=/app
 
 EXPOSE 8000
 

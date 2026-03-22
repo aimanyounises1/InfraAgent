@@ -1,0 +1,39 @@
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+dist
+build
+.mypy_cache
+.ruff_cache
+.pytest_cache
+
+# Virtual environments
+.venv
+venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Git
+.git
+.gitignore
+
+# Docker (prevent recursive copy)
+docker-compose.yml
+
+# Dashboard (built separately)
+dashboard
+
+# Misc
+*.md
+.env
+.env.*
+!.env.example
+uv.lock
