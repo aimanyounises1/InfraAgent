@@ -43,3 +43,4 @@ Thumbs.db
 
 # ruff
 .ruff_cache/
+.github/workflows/
