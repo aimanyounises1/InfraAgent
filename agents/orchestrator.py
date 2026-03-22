@@ -151,11 +151,50 @@ def _format_llm_analysis(raw: dict[str, Any]) -> str:
     return f"\n## AI Analysis\n\n{llm_analysis}\n"
 
 
+def _format_llm_agent_response(
+    agent_data: dict[str, Any],
+    heading: str,
+) -> str | None:
+    """Format a response from the create_agent() LLM path.
+
+    When the LLM agent path is active, the raw dict contains a single
+    ``llm_response`` key with the full natural-language response from the
+    agent. This helper detects that case and returns a formatted section,
+    or None if the data did not come from the LLM agent path.
+
+    Args:
+        agent_data: The agent output dict (e.g. k8s_data, gpu_data).
+        heading: Markdown heading for the section (e.g. "Kubernetes Cluster").
+
+    Returns:
+        Formatted string if llm_response is present, or None.
+    """
+    raw: dict[str, Any] = agent_data.get("raw", {})
+    llm_response: str | None = raw.get("llm_response")
+    if llm_response is None:
+        return None
+
+    lines: list[str] = []
+    lines.append(f"## {heading}")
+    lines.append("")
+
+    tools: list[str] = agent_data.get("tools_called", [])
+    if tools:
+        lines.append(f"**Tools used:** {', '.join(tools)}")
+        lines.append("")
+
+    lines.append(llm_response)
+    return "\n".join(lines)
+
+
 def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
     """Format Kubernetes agent results into a human-readable string.
 
     Parses the raw tool outputs and presents pod lists, deployment
     info, service details, logs, and action results in a structured way.
+
+    If the data came from the create_agent() LLM path (contains
+    ``llm_response`` key), the LLM's response is used directly.
 
     Args:
         k8s_data: The k8s_data dict from the agent with "raw" and
@@ -164,6 +203,13 @@ def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
     Returns:
         Formatted multi-line string summarizing K8s results.
     """
+    # Check for LLM agent response first
+    llm_formatted: str | None = _format_llm_agent_response(
+        k8s_data, "Kubernetes Cluster"
+    )
+    if llm_formatted is not None:
+        return llm_formatted
+
     lines: list[str] = []
     lines.append("## Kubernetes Cluster")
     lines.append("")
@@ -312,6 +358,9 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
     Parses the raw tool outputs and presents device lists, cluster
     summaries, health reports, and per-device metrics in a structured way.
 
+    If the data came from the create_agent() LLM path (contains
+    ``llm_response`` key), the LLM's response is used directly.
+
     Args:
         gpu_data: The gpu_data dict from the agent with "raw" and
                   "tools_called" keys.
@@ -319,6 +368,13 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
     Returns:
         Formatted multi-line string summarizing GPU results.
     """
+    # Check for LLM agent response first
+    llm_formatted: str | None = _format_llm_agent_response(
+        gpu_data, "GPU Cluster"
+    )
+    if llm_formatted is not None:
+        return llm_formatted
+
     lines: list[str] = []
     lines.append("## GPU Cluster")
     lines.append("")
@@ -516,6 +572,9 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
     Parses the raw tool outputs and presents PagerDuty incidents,
     Grafana alerts, Jira tickets, and RCA reports in a structured way.
 
+    If the data came from the create_agent() LLM path (contains
+    ``llm_response`` key), the LLM's response is used directly.
+
     Args:
         incident_data: The incident_data dict from the agent with "raw" and
                        "tools_called" keys.
@@ -523,6 +582,13 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
     Returns:
         Formatted multi-line string summarizing incident results.
     """
+    # Check for LLM agent response first
+    llm_formatted: str | None = _format_llm_agent_response(
+        incident_data, "Incident Management"
+    )
+    if llm_formatted is not None:
+        return llm_formatted
+
     lines: list[str] = []
     lines.append("## Incident Management")
     lines.append("")
@@ -688,6 +754,9 @@ async def synthesize_response(state: InfraState) -> dict:
     and formats them into structured, readable output. Each domain
     (K8s, GPU, Incident) has its own formatter that understands the
     data shapes returned by the corresponding MCP tools.
+
+    Also handles the create_agent() LLM path where agents return a
+    ``llm_response`` key containing the full natural-language response.
 
     Args:
         state: The current InfraState containing agent output dicts.

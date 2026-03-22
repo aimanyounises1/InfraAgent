@@ -6,8 +6,11 @@ Responsibilities:
 - Detect resource bottlenecks (CPU/memory)
 - Report on node health and capacity
 
-Dispatches queries to the appropriate k8s MCP tools via keyword matching,
-then optionally enhances results with LLM-powered analysis when available.
+Primary path: Uses ``create_agent()`` with LangChain ``@tool``-decorated
+functions so the LLM can decide which tools to call.
+
+Fallback path: If the LLM is unavailable (e.g. Ollama not running), falls
+back to the original keyword-based dispatch for deterministic operation.
 """
 
 from __future__ import annotations
@@ -37,13 +40,27 @@ from mcp_servers.k8s_mcp.tools.services import k8s_list_services
 
 logger = logging.getLogger(__name__)
 
-# System prompt for LLM-powered analysis of Kubernetes cluster data.
+# System prompt for the LLM-powered create_agent path.
+K8S_SYSTEM_PROMPT: str = (
+    "You are a Kubernetes cluster health specialist. "
+    "You have tools to inspect pods, deployments, services, and logs. "
+    "When the user asks about cluster status, use the appropriate tools to gather data. "
+    "Always provide concise, actionable analysis of what you find. "
+    "If you see failing pods or CrashLoopBackOff, highlight them as issues."
+)
+
+# System prompt for the legacy LLM analysis (post-keyword-dispatch).
 _K8S_LLM_SYSTEM_PROMPT: str = (
     "You are a Kubernetes cluster health specialist. "
     "Analyze the cluster data and highlight any issues, failing pods, "
     "resource pressure, or recommendations. "
     "Be concise and actionable."
 )
+
+
+# ---------------------------------------------------------------------------
+# Keyword-based parsing helpers (used by fallback path)
+# ---------------------------------------------------------------------------
 
 
 def _parse_namespace(query: str) -> str:
@@ -172,39 +189,91 @@ async def _safe_call(tool_fn: Any, params: Any, tool_name: str) -> str:
         )
 
 
-async def cluster_health_agent(state: dict) -> dict:
-    """Process Kubernetes-related queries using k8s_mcp tools.
+# ---------------------------------------------------------------------------
+# LLM-powered agent path (create_agent)
+# ---------------------------------------------------------------------------
 
-    Parses the user query to determine which Kubernetes tools to invoke,
-    calls them with appropriate parameters, and returns structured results.
-    When an LLM provider is available, appends an AI-generated analysis
-    of the collected data.
 
-    Keyword dispatch rules:
-    - "list pods" / "pods" / "show pods" -> k8s_list_pods
-    - "describe pod X" / specific pod name -> k8s_describe_pod
-    - "logs" / "log" -> k8s_get_pod_logs
-    - "deploy" / "deployment" -> k8s_list_deployments
-    - "scale X to N" -> k8s_scale_deployment
-    - "restart X" -> k8s_restart_deployment
-    - "service" / "svc" -> k8s_list_services
-    - Default: k8s_list_pods + k8s_list_deployments for overview
+async def _run_llm_agent(query: str) -> dict[str, Any] | None:
+    """Attempt to process the query using a ``create_agent()`` LLM agent.
+
+    Returns the structured agent result dict, or None if the LLM agent
+    cannot be created or invoked (so the caller should fall back to
+    keyword dispatch).
 
     Args:
-        state: The current InfraState as a dict (includes "query" key).
+        query: The user query string.
 
     Returns:
-        Dict with "k8s_data" containing raw results and tools called,
-        plus "actions_taken" list.
+        Dict with "k8s_data" and "actions_taken" keys, or None on failure.
     """
-    query: str = state.query if hasattr(state, "query") else state.get("query", "")
-    if not query:
-        logger.warning("cluster_health_agent called with empty query")
+    try:
+        from langchain.agents import create_agent
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from agents.llm_provider import get_llm
+        from agents.tools import K8S_TOOLS
+
+        llm = get_llm()
+        agent = create_agent(
+            model=llm,
+            tools=K8S_TOOLS,
+            prompt=K8S_SYSTEM_PROMPT,
+            checkpointer=MemorySaver(),
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": query}]},
+            config={"recursion_limit": 10},
+        )
+
+        response_text: str = result["messages"][-1].content
+
+        # Extract which tools were called from the message history
+        tools_called: list[str] = [
+            m.name
+            for m in result["messages"]
+            if hasattr(m, "name") and m.name
+        ]
+
+        namespace: str = _parse_namespace(query)
+
         return {
-            "k8s_data": {"raw": {}, "tools_called": [], "error": "Empty query"},
-            "actions_taken": ["cluster_health_agent: received empty query"],
+            "k8s_data": {
+                "raw": {"llm_response": response_text},
+                "tools_called": tools_called,
+                "namespace": namespace,
+            },
+            "actions_taken": [
+                f"cluster_health_agent: {t}" for t in tools_called
+            ]
+            or ["cluster_health_agent: analyzed query via LLM agent"],
         }
 
+    except Exception as exc:
+        logger.warning(
+            "LLM agent path unavailable, falling back to keyword dispatch: %s",
+            exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Keyword-based fallback dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
+    """Process the query using keyword-based dispatch to MCP tools.
+
+    This is the deterministic fallback when the LLM agent is unavailable.
+
+    Args:
+        query: The user query string.
+
+    Returns:
+        Dict with "k8s_data" and "actions_taken" keys.
+    """
     query_lower: str = query.lower()
     namespace: str = _parse_namespace(query)
     results: dict[str, Any] = {}
@@ -420,7 +489,7 @@ async def cluster_health_agent(state: dict) -> dict:
         actions.append("cluster_health_agent: LLM analysis generated")
 
     logger.info(
-        "cluster_health_agent completed",
+        "cluster_health_agent completed (keyword dispatch)",
         extra={"tools_called": tools_called, "namespace": namespace},
     )
 
@@ -435,3 +504,41 @@ async def cluster_health_agent(state: dict) -> dict:
             f"cluster_health_agent: processed query in namespace {namespace}"
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Public entry point (used by the orchestrator StateGraph)
+# ---------------------------------------------------------------------------
+
+
+async def cluster_health_agent(state: dict) -> dict:
+    """Process Kubernetes-related queries using k8s_mcp tools.
+
+    Tries the LLM-powered ``create_agent()`` path first. If the LLM is
+    unavailable, falls back to deterministic keyword-based dispatch.
+
+    The function signature is unchanged from the original so the orchestrator
+    StateGraph continues to work without modification.
+
+    Args:
+        state: The current InfraState as a dict (includes "query" key).
+
+    Returns:
+        Dict with "k8s_data" containing raw results and tools called,
+        plus "actions_taken" list.
+    """
+    query: str = state.query if hasattr(state, "query") else state.get("query", "")
+    if not query:
+        logger.warning("cluster_health_agent called with empty query")
+        return {
+            "k8s_data": {"raw": {}, "tools_called": [], "error": "Empty query"},
+            "actions_taken": ["cluster_health_agent: received empty query"],
+        }
+
+    # Try LLM agent path first
+    llm_result: dict[str, Any] | None = await _run_llm_agent(query)
+    if llm_result is not None:
+        return llm_result
+
+    # Fallback to keyword dispatch
+    return await _run_keyword_dispatch(query)

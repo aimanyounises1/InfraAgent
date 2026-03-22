@@ -6,8 +6,11 @@ Responsibilities:
 - Suggest workload rebalancing across GPUs
 - Report on cluster-wide GPU efficiency
 
-Dispatches queries to the appropriate gpu MCP tools via keyword matching,
-then optionally enhances results with LLM-powered analysis when available.
+Primary path: Uses ``create_agent()`` with LangChain ``@tool``-decorated
+functions so the LLM can decide which tools to call.
+
+Fallback path: If the LLM is unavailable (e.g. Ollama not running), falls
+back to the original keyword-based dispatch for deterministic operation.
 """
 
 from __future__ import annotations
@@ -35,13 +38,28 @@ from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
 logger = logging.getLogger(__name__)
 
-# System prompt for LLM-powered analysis of GPU workload data.
+# System prompt for the LLM-powered create_agent path.
+GPU_SYSTEM_PROMPT: str = (
+    "You are a GPU workload monitoring specialist. "
+    "You have tools to check GPU devices, utilization, memory, temperature, "
+    "power, processes, health, and cluster summaries. "
+    "When the user asks about GPU status, use the appropriate tools to gather data. "
+    "Identify overloaded devices, thermal concerns, stuck jobs, memory pressure, "
+    "or workload imbalance. Be concise and actionable."
+)
+
+# System prompt for the legacy LLM analysis (post-keyword-dispatch).
 _GPU_LLM_SYSTEM_PROMPT: str = (
     "You are a GPU workload monitoring specialist. "
     "Analyze GPU metrics and identify: overloaded devices, thermal concerns, "
     "stuck jobs, memory pressure, or workload imbalance recommendations. "
     "Be concise and actionable."
 )
+
+
+# ---------------------------------------------------------------------------
+# Keyword-based parsing helpers (used by fallback path)
+# ---------------------------------------------------------------------------
 
 
 def _parse_device_index(query: str) -> int | None:
@@ -152,45 +170,88 @@ async def _per_device_call(
     return json.dumps(all_results, indent=2), [f"{tool_name}(x{count})"]
 
 
-async def gpu_workload_agent(state: dict) -> dict:
-    """Process GPU-related queries using gpu_mcp tools.
+# ---------------------------------------------------------------------------
+# LLM-powered agent path (create_agent)
+# ---------------------------------------------------------------------------
 
-    Parses the user query to determine which GPU tools to invoke,
-    calls them with appropriate parameters, and returns structured results.
-    When an LLM provider is available, appends an AI-generated analysis
-    of the collected data.
 
-    Keyword dispatch rules:
-    - "list" / "devices" / "gpus" -> gpu_list_devices
-    - "utilization" / "usage" / "load" -> gpu_get_cluster_summary
-    - "temperature" / "temp" / "thermal" -> gpu_get_temperature per device
-    - "memory" / "vram" -> gpu_get_memory per device
-    - "power" -> gpu_get_power per device
-    - "health" / "status" -> gpu_health_check
-    - "process" / "job" / "running" -> gpu_list_processes
-    - Default: gpu_get_cluster_summary + gpu_health_check
+async def _run_llm_agent(query: str) -> dict[str, Any] | None:
+    """Attempt to process the query using a ``create_agent()`` LLM agent.
+
+    Returns the structured agent result dict, or None if the LLM agent
+    cannot be created or invoked (so the caller should fall back to
+    keyword dispatch).
 
     Args:
-        state: The current InfraState as a dict (includes "query" key).
+        query: The user query string.
 
     Returns:
-        Dict with "gpu_data" containing raw results and tools called,
-        plus "actions_taken" list.
+        Dict with "gpu_data" and "actions_taken" keys, or None on failure.
     """
-    query: str = (
-        state.query if hasattr(state, "query") else state.get("query", "")
-    )
-    if not query:
-        logger.warning("gpu_workload_agent called with empty query")
+    try:
+        from langchain.agents import create_agent
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from agents.llm_provider import get_llm
+        from agents.tools import GPU_TOOLS
+
+        llm = get_llm()
+        agent = create_agent(
+            model=llm,
+            tools=GPU_TOOLS,
+            prompt=GPU_SYSTEM_PROMPT,
+            checkpointer=MemorySaver(),
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": query}]},
+            config={"recursion_limit": 10},
+        )
+
+        response_text: str = result["messages"][-1].content
+
+        # Extract which tools were called from the message history
+        tools_called: list[str] = [
+            m.name
+            for m in result["messages"]
+            if hasattr(m, "name") and m.name
+        ]
+
         return {
             "gpu_data": {
-                "raw": {},
-                "tools_called": [],
-                "error": "Empty query",
+                "raw": {"llm_response": response_text},
+                "tools_called": tools_called,
             },
-            "actions_taken": ["gpu_workload_agent: received empty query"],
+            "actions_taken": [
+                f"gpu_workload_agent: {t}" for t in tools_called
+            ]
+            or ["gpu_workload_agent: analyzed query via LLM agent"],
         }
 
+    except Exception as exc:
+        logger.warning(
+            "LLM agent path unavailable, falling back to keyword dispatch: %s",
+            exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Keyword-based fallback dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
+    """Process the query using keyword-based dispatch to MCP tools.
+
+    This is the deterministic fallback when the LLM agent is unavailable.
+
+    Args:
+        query: The user query string.
+
+    Returns:
+        Dict with "gpu_data" and "actions_taken" keys.
+    """
     query_lower: str = query.lower()
     device_index: int | None = _parse_device_index(query)
     results: dict[str, Any] = {}
@@ -336,7 +397,7 @@ async def gpu_workload_agent(state: dict) -> dict:
         actions.append("gpu_workload_agent: LLM analysis generated")
 
     logger.info(
-        "gpu_workload_agent completed",
+        "gpu_workload_agent completed (keyword dispatch)",
         extra={"tools_called": tools_called},
     )
 
@@ -348,3 +409,47 @@ async def gpu_workload_agent(state: dict) -> dict:
         "actions_taken": actions
         or ["gpu_workload_agent: processed GPU query"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Public entry point (used by the orchestrator StateGraph)
+# ---------------------------------------------------------------------------
+
+
+async def gpu_workload_agent(state: dict) -> dict:
+    """Process GPU-related queries using gpu_mcp tools.
+
+    Tries the LLM-powered ``create_agent()`` path first. If the LLM is
+    unavailable, falls back to deterministic keyword-based dispatch.
+
+    The function signature is unchanged from the original so the orchestrator
+    StateGraph continues to work without modification.
+
+    Args:
+        state: The current InfraState as a dict (includes "query" key).
+
+    Returns:
+        Dict with "gpu_data" containing raw results and tools called,
+        plus "actions_taken" list.
+    """
+    query: str = (
+        state.query if hasattr(state, "query") else state.get("query", "")
+    )
+    if not query:
+        logger.warning("gpu_workload_agent called with empty query")
+        return {
+            "gpu_data": {
+                "raw": {},
+                "tools_called": [],
+                "error": "Empty query",
+            },
+            "actions_taken": ["gpu_workload_agent: received empty query"],
+        }
+
+    # Try LLM agent path first
+    llm_result: dict[str, Any] | None = await _run_llm_agent(query)
+    if llm_result is not None:
+        return llm_result
+
+    # Fallback to keyword dispatch
+    return await _run_keyword_dispatch(query)

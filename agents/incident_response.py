@@ -7,8 +7,11 @@ Responsibilities:
 - Create/update Jira tickets
 - Acknowledge/resolve PagerDuty incidents
 
-Dispatches queries to the appropriate incident MCP tools via keyword matching,
-then optionally enhances results with LLM-powered analysis when available.
+Primary path: Uses ``create_agent()`` with LangChain ``@tool``-decorated
+functions so the LLM can decide which tools to call.
+
+Fallback path: If the LLM is unavailable (e.g. Ollama not running), falls
+back to the original keyword-based dispatch for deterministic operation.
 """
 
 from __future__ import annotations
@@ -45,7 +48,17 @@ from mcp_servers.incident_mcp.tools.rca import incident_generate_rca
 
 logger = logging.getLogger(__name__)
 
-# System prompt for LLM-powered analysis of incident data.
+# System prompt for the LLM-powered create_agent path.
+INCIDENT_SYSTEM_PROMPT: str = (
+    "You are an incident response specialist. "
+    "You have tools to manage PagerDuty incidents, query Grafana alerts and metrics, "
+    "search and create Jira tickets, and generate Root Cause Analysis reports. "
+    "When the user asks about incidents, use the appropriate tools to gather data. "
+    "Provide severity assessment, correlation between alerts, recommended next steps, "
+    "and escalation guidance. Be concise and actionable."
+)
+
+# System prompt for the legacy LLM analysis (post-keyword-dispatch).
 _INCIDENT_LLM_SYSTEM_PROMPT: str = (
     "You are an incident response specialist. "
     "Analyze the incident data and provide: severity assessment, "
@@ -53,6 +66,11 @@ _INCIDENT_LLM_SYSTEM_PROMPT: str = (
     "and escalation guidance. "
     "Be concise and actionable."
 )
+
+
+# ---------------------------------------------------------------------------
+# Keyword-based parsing helpers (used by fallback path)
+# ---------------------------------------------------------------------------
 
 
 def _parse_incident_id(query: str) -> str | None:
@@ -207,48 +225,88 @@ async def _safe_call(tool_fn: Any, params: Any, tool_name: str) -> str:
         )
 
 
-async def incident_response_agent(state: dict) -> dict:
-    """Process incident-related queries using incident_mcp tools.
+# ---------------------------------------------------------------------------
+# LLM-powered agent path (create_agent)
+# ---------------------------------------------------------------------------
 
-    Parses the user query to determine which incident tools to invoke,
-    calls them with appropriate parameters, and returns structured results.
-    When an LLM provider is available, appends an AI-generated analysis
-    of the collected data.
 
-    Keyword dispatch rules:
-    - "create ticket" / "create jira" / "open ticket" -> jira_create_ticket
-    - "search" / "find ticket" / "past incident" -> incident_jira_search
-    - "alert" / "alerts" / "firing" -> incident_grafana_get_alerts
-    - "metric" / "grafana" / "query" -> incident_grafana_query
-    - "pagerduty" / "pd" / "on-call" -> incident_pagerduty_list_incidents
-    - "acknowledge" / "ack" -> incident_pagerduty_acknowledge
-    - "resolve" -> incident_pagerduty_resolve
-    - "rca" / "root cause" / "analysis" -> incident_generate_rca
-    - Default: pagerduty_list_incidents + grafana_get_alerts
+async def _run_llm_agent(query: str) -> dict[str, Any] | None:
+    """Attempt to process the query using a ``create_agent()`` LLM agent.
+
+    Returns the structured agent result dict, or None if the LLM agent
+    cannot be created or invoked (so the caller should fall back to
+    keyword dispatch).
 
     Args:
-        state: The current InfraState as a dict (includes "query" key).
+        query: The user query string.
 
     Returns:
-        Dict with "incident_data" containing raw results and tools called,
-        plus "actions_taken" list.
+        Dict with "incident_data" and "actions_taken" keys, or None on failure.
     """
-    query: str = (
-        state.query if hasattr(state, "query") else state.get("query", "")
-    )
-    if not query:
-        logger.warning("incident_response_agent called with empty query")
+    try:
+        from langchain.agents import create_agent
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from agents.llm_provider import get_llm
+        from agents.tools import INCIDENT_TOOLS
+
+        llm = get_llm()
+        agent = create_agent(
+            model=llm,
+            tools=INCIDENT_TOOLS,
+            prompt=INCIDENT_SYSTEM_PROMPT,
+            checkpointer=MemorySaver(),
+        )
+
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": query}]},
+            config={"recursion_limit": 10},
+        )
+
+        response_text: str = result["messages"][-1].content
+
+        # Extract which tools were called from the message history
+        tools_called: list[str] = [
+            m.name
+            for m in result["messages"]
+            if hasattr(m, "name") and m.name
+        ]
+
         return {
             "incident_data": {
-                "raw": {},
-                "tools_called": [],
-                "error": "Empty query",
+                "raw": {"llm_response": response_text},
+                "tools_called": tools_called,
             },
             "actions_taken": [
-                "incident_response_agent: received empty query"
-            ],
+                f"incident_response_agent: {t}" for t in tools_called
+            ]
+            or ["incident_response_agent: analyzed query via LLM agent"],
         }
 
+    except Exception as exc:
+        logger.warning(
+            "LLM agent path unavailable, falling back to keyword dispatch: %s",
+            exc,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Keyword-based fallback dispatch
+# ---------------------------------------------------------------------------
+
+
+async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
+    """Process the query using keyword-based dispatch to MCP tools.
+
+    This is the deterministic fallback when the LLM agent is unavailable.
+
+    Args:
+        query: The user query string.
+
+    Returns:
+        Dict with "incident_data" and "actions_taken" keys.
+    """
     query_lower: str = query.lower()
     results: dict[str, Any] = {}
     tools_called: list[str] = []
@@ -475,7 +533,7 @@ async def incident_response_agent(state: dict) -> dict:
         actions.append("incident_response_agent: LLM analysis generated")
 
     logger.info(
-        "incident_response_agent completed",
+        "incident_response_agent completed (keyword dispatch)",
         extra={"tools_called": tools_called},
     )
 
@@ -487,3 +545,49 @@ async def incident_response_agent(state: dict) -> dict:
         "actions_taken": actions
         or ["incident_response_agent: processed incident query"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Public entry point (used by the orchestrator StateGraph)
+# ---------------------------------------------------------------------------
+
+
+async def incident_response_agent(state: dict) -> dict:
+    """Process incident-related queries using incident_mcp tools.
+
+    Tries the LLM-powered ``create_agent()`` path first. If the LLM is
+    unavailable, falls back to deterministic keyword-based dispatch.
+
+    The function signature is unchanged from the original so the orchestrator
+    StateGraph continues to work without modification.
+
+    Args:
+        state: The current InfraState as a dict (includes "query" key).
+
+    Returns:
+        Dict with "incident_data" containing raw results and tools called,
+        plus "actions_taken" list.
+    """
+    query: str = (
+        state.query if hasattr(state, "query") else state.get("query", "")
+    )
+    if not query:
+        logger.warning("incident_response_agent called with empty query")
+        return {
+            "incident_data": {
+                "raw": {},
+                "tools_called": [],
+                "error": "Empty query",
+            },
+            "actions_taken": [
+                "incident_response_agent: received empty query"
+            ],
+        }
+
+    # Try LLM agent path first
+    llm_result: dict[str, Any] | None = await _run_llm_agent(query)
+    if llm_result is not None:
+        return llm_result
+
+    # Fallback to keyword dispatch
+    return await _run_keyword_dispatch(query)
