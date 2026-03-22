@@ -7,6 +7,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
+# LLM Analysis Mock (autouse -- prevents real Ollama calls in tests)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _mock_llm_analysis():
+    """Disable LLM analysis in all tests to avoid hitting real Ollama.
+
+    The LLM analysis is an optional enhancement that runs after keyword-based
+    tool dispatch. In tests we mock MCP tools, so the LLM analysis would
+    either time out or produce irrelevant results. This fixture patches
+    ``generate_llm_analysis`` to always return None, keeping tests fast and
+    deterministic.
+    """
+    with patch(
+        "agents.llm_analysis.generate_llm_analysis",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
 # Kubernetes Mocks
 # ---------------------------------------------------------------------------
 

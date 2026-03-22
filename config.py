@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # --- Ollama (local) ---
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2"
+    ollama_model: str = "qwen2.5-coder:14b"
 
     # --- NVIDIA NIM ---
     nvidia_api_key: str = ""
@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    # --- LLM Analysis ---
+    llm_analysis_timeout: int = 30  # seconds for LLM analysis calls
+    llm_analysis_max_data_chars: int = 4000  # max chars of data sent to LLM
 
     model_config = {
         "env_prefix": "INFRA_AGENT_",

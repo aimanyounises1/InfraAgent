@@ -132,6 +132,25 @@ def _safe_parse_json(raw: str) -> Any:
         return raw
 
 
+def _format_llm_analysis(raw: dict[str, Any]) -> str:
+    """Extract and format the LLM analysis section if present.
+
+    Checks the raw results dict for an ``llm_analysis`` key and returns
+    it formatted as a Markdown section. Returns an empty string if no
+    LLM analysis is present.
+
+    Args:
+        raw: The raw results dict from an agent.
+
+    Returns:
+        A formatted "## AI Analysis" Markdown section, or empty string.
+    """
+    llm_analysis: Any = raw.get("llm_analysis")
+    if not llm_analysis:
+        return ""
+    return f"\n## AI Analysis\n\n{llm_analysis}\n"
+
+
 def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
     """Format Kubernetes agent results into a human-readable string.
 
@@ -159,7 +178,15 @@ def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
         lines.append("")
 
     for key, value_str in raw.items():
-        parsed = _safe_parse_json(value_str) if isinstance(value_str, str) else value_str
+        # Skip llm_analysis -- handled separately at the end
+        if key == "llm_analysis":
+            continue
+
+        parsed = (
+            _safe_parse_json(value_str)
+            if isinstance(value_str, str)
+            else value_str
+        )
 
         if key == "pods" and isinstance(parsed, dict):
             pod_count = parsed.get("pod_count", 0)
@@ -169,7 +196,10 @@ def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
                 name = pod.get("name", "unknown")
                 status = pod.get("status", "Unknown")
                 node = pod.get("node", "N/A")
-                restarts = sum(c.get("restart_count", 0) for c in pod.get("containers", []))
+                restarts = sum(
+                    c.get("restart_count", 0)
+                    for c in pod.get("containers", [])
+                )
                 status_icon = "OK" if status == "Running" else "WARN"
                 lines.append(
                     f"  [{status_icon}] {name} -- Status: {status}, "
@@ -198,15 +228,21 @@ def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
                 cluster_ip = svc.get("cluster_ip", "N/A")
                 ports = svc.get("ports", [])
                 port_str = ", ".join(
-                    f"{p.get('port', '?')}/{p.get('protocol', 'TCP')}" for p in ports
+                    f"{p.get('port', '?')}/{p.get('protocol', 'TCP')}"
+                    for p in ports
                 )
-                lines.append(f"  {name} -- Type: {svc_type}, IP: {cluster_ip}, Ports: {port_str}")
+                lines.append(
+                    f"  {name} -- Type: {svc_type}, "
+                    f"IP: {cluster_ip}, Ports: {port_str}"
+                )
             lines.append("")
 
         elif key == "pod_logs" and isinstance(parsed, dict):
             pod_name = parsed.get("pod", "unknown")
             log_lines_count = parsed.get("log_lines", 0)
-            lines.append(f"### Logs for {pod_name} ({log_lines_count} lines)")
+            lines.append(
+                f"### Logs for {pod_name} ({log_lines_count} lines)"
+            )
             logs_text = parsed.get("logs", "")
             if logs_text:
                 # Show last 20 lines max in summary
@@ -215,7 +251,9 @@ def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
                 for line in shown:
                     lines.append(f"  {line}")
                 if len(log_lines_list) > 20:
-                    lines.append(f"  ... ({len(log_lines_list) - 20} more lines)")
+                    lines.append(
+                        f"  ... ({len(log_lines_list) - 20} more lines)"
+                    )
             lines.append("")
 
         elif key == "describe_pod":
@@ -260,6 +298,11 @@ def _format_k8s_data(k8s_data: dict[str, Any]) -> str:
                 lines.append(str(parsed))
             lines.append("")
 
+    # Append LLM analysis section if available
+    llm_section: str = _format_llm_analysis(raw)
+    if llm_section:
+        lines.append(llm_section)
+
     return "\n".join(lines)
 
 
@@ -288,7 +331,15 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
         lines.append("")
 
     for key, value_str in raw.items():
-        parsed = _safe_parse_json(value_str) if isinstance(value_str, str) else value_str
+        # Skip llm_analysis -- handled separately at the end
+        if key == "llm_analysis":
+            continue
+
+        parsed = (
+            _safe_parse_json(value_str)
+            if isinstance(value_str, str)
+            else value_str
+        )
 
         if key == "devices" and isinstance(parsed, list):
             lines.append(f"### GPU Devices ({len(parsed)} found)")
@@ -297,7 +348,9 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
                 name = dev.get("name", "Unknown")
                 mem = dev.get("total_memory_mb", 0)
                 driver = dev.get("driver_version", "N/A")
-                lines.append(f"  GPU {idx}: {name} -- {mem} MB, Driver: {driver}")
+                lines.append(
+                    f"  GPU {idx}: {name} -- {mem} MB, Driver: {driver}"
+                )
             lines.append("")
 
         elif key == "cluster_summary" and isinstance(parsed, dict):
@@ -310,7 +363,8 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
             lines.append(f"### Cluster Summary ({count} devices)")
             lines.append(f"  Average GPU Utilization: {avg_util}%")
             lines.append(
-                f"  Memory: {used_mem} MB / {total_mem} MB ({mem_pct}% used, {free_mem} MB free)"
+                f"  Memory: {used_mem} MB / {total_mem} MB "
+                f"({mem_pct}% used, {free_mem} MB free)"
             )
             hottest = parsed.get("hottest_device", {})
             if hottest:
@@ -321,7 +375,8 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
             most_loaded = parsed.get("most_loaded_device", {})
             if most_loaded:
                 lines.append(
-                    f"  Most Loaded: GPU {most_loaded.get('device_index', '?')} "
+                    f"  Most Loaded: GPU "
+                    f"{most_loaded.get('device_index', '?')} "
                     f"at {most_loaded.get('gpu_utilization_pct', '?')}%"
                 )
             lines.append("")
@@ -329,7 +384,9 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
         elif key == "health" and isinstance(parsed, dict):
             overall = parsed.get("overall_status", "unknown")
             summary = parsed.get("summary", {})
-            lines.append(f"### Health Report (Overall: {overall.upper()})")
+            lines.append(
+                f"### Health Report (Overall: {overall.upper()})"
+            )
             lines.append(
                 f"  Healthy: {summary.get('healthy', 0)}, "
                 f"Warning: {summary.get('warning', 0)}, "
@@ -344,7 +401,8 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
                 mem_util = dev.get("memory_utilization_pct", "?")
                 status_tag = status.upper()
                 lines.append(
-                    f"  GPU {idx} [{status_tag}]: Temp: {temp}C, Util: {util}%, Mem: {mem_util}%"
+                    f"  GPU {idx} [{status_tag}]: "
+                    f"Temp: {temp}C, Util: {util}%, Mem: {mem_util}%"
                 )
             lines.append("")
 
@@ -356,7 +414,9 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
                 status = dev.get("status", "normal")
                 throttle = dev.get("throttle_warning", False)
                 warning = " [THROTTLE WARNING]" if throttle else ""
-                lines.append(f"  GPU {idx}: {temp}C ({status}){warning}")
+                lines.append(
+                    f"  GPU {idx}: {temp}C ({status}){warning}"
+                )
             lines.append("")
 
         elif key == "memory" and isinstance(parsed, list):
@@ -367,7 +427,10 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
                 used = dev.get("used_mb", 0)
                 free = dev.get("free_mb", 0)
                 pct = dev.get("used_pct", 0)
-                lines.append(f"  GPU {idx}: {used} MB / {total} MB ({pct}% used, {free} MB free)")
+                lines.append(
+                    f"  GPU {idx}: {used} MB / {total} MB "
+                    f"({pct}% used, {free} MB free)"
+                )
             lines.append("")
 
         elif key == "power" and isinstance(parsed, list):
@@ -377,7 +440,9 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
                 draw = dev.get("power_draw_w", 0)
                 limit = dev.get("power_limit_w", 0)
                 pct = dev.get("power_usage_pct", 0)
-                lines.append(f"  GPU {idx}: {draw}W / {limit}W ({pct}%)")
+                lines.append(
+                    f"  GPU {idx}: {draw}W / {limit}W ({pct}%)"
+                )
             lines.append("")
 
         elif key == "processes" and isinstance(parsed, (list, dict)):
@@ -385,27 +450,38 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
             if isinstance(parsed, dict):
                 procs = parsed.get("processes", [])
                 idx = parsed.get("device_index", "?")
-                lines.append(f"  Device {idx}: {len(procs)} process(es)")
+                lines.append(
+                    f"  Device {idx}: {len(procs)} process(es)"
+                )
                 for proc in procs:
                     pid = proc.get("pid", "?")
                     name = proc.get("name", "unknown")
                     mem = proc.get("memory_mb", 0)
-                    lines.append(f"    PID {pid}: {name} ({mem} MB)")
+                    lines.append(
+                        f"    PID {pid}: {name} ({mem} MB)"
+                    )
             elif isinstance(parsed, list):
                 for device_data in parsed:
                     if isinstance(device_data, dict):
                         idx = device_data.get("device_index", "?")
                         procs = device_data.get("processes", [])
-                        lines.append(f"  Device {idx}: {len(procs)} process(es)")
+                        lines.append(
+                            f"  Device {idx}: "
+                            f"{len(procs)} process(es)"
+                        )
                         for proc in procs:
                             pid = proc.get("pid", "?")
                             name = proc.get("name", "unknown")
                             mem = proc.get("memory_mb", 0)
-                            lines.append(f"    PID {pid}: {name} ({mem} MB)")
+                            lines.append(
+                                f"    PID {pid}: {name} ({mem} MB)"
+                            )
             lines.append("")
 
         # Single-device result (not list)
-        elif key in ("temperature", "memory", "power") and isinstance(parsed, dict):
+        elif key in ("temperature", "memory", "power") and isinstance(
+            parsed, dict
+        ):
             idx = parsed.get("device_index", "?")
             lines.append(f"### {key.capitalize()} (GPU {idx})")
             for k, v in parsed.items():
@@ -425,6 +501,11 @@ def _format_gpu_data(gpu_data: dict[str, Any]) -> str:
             else:
                 lines.append(str(parsed))
             lines.append("")
+
+    # Append LLM analysis section if available
+    llm_section: str = _format_llm_analysis(raw)
+    if llm_section:
+        lines.append(llm_section)
 
     return "\n".join(lines)
 
@@ -454,7 +535,15 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
         lines.append("")
 
     for key, value_str in raw.items():
-        parsed = _safe_parse_json(value_str) if isinstance(value_str, str) else value_str
+        # Skip llm_analysis -- handled separately at the end
+        if key == "llm_analysis":
+            continue
+
+        parsed = (
+            _safe_parse_json(value_str)
+            if isinstance(value_str, str)
+            else value_str
+        )
 
         if key == "incidents" and isinstance(parsed, dict):
             total = parsed.get("total", 0)
@@ -462,10 +551,15 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
             incidents = parsed.get("incidents", [])
             for inc in incidents:
                 inc_id = inc.get("id", "?")
-                title = inc.get("title", inc.get("summary", "No title"))
+                title = inc.get(
+                    "title", inc.get("summary", "No title")
+                )
                 status = inc.get("status", "unknown")
                 urgency = inc.get("urgency", "N/A")
-                lines.append(f"  [{status.upper()}] {inc_id}: {title} (Urgency: {urgency})")
+                lines.append(
+                    f"  [{status.upper()}] {inc_id}: {title} "
+                    f"(Urgency: {urgency})"
+                )
             lines.append("")
 
         elif key == "alerts" and isinstance(parsed, dict):
@@ -474,11 +568,22 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
             alerts = parsed.get("alerts", [])
             for alert in alerts:
                 if isinstance(alert, dict):
-                    name = alert.get("labels", {}).get("alertname", alert.get("name", "Unknown"))
-                    severity = alert.get("labels", {}).get("severity", "N/A")
-                    state = alert.get("status", {}).get("state", alert.get("state", "unknown"))
-                    summary = alert.get("annotations", {}).get("summary", "")
-                    lines.append(f"  [{state.upper()}] {name} (Severity: {severity})")
+                    name = alert.get("labels", {}).get(
+                        "alertname", alert.get("name", "Unknown")
+                    )
+                    severity = alert.get("labels", {}).get(
+                        "severity", "N/A"
+                    )
+                    state = alert.get("status", {}).get(
+                        "state", alert.get("state", "unknown")
+                    )
+                    summary = alert.get("annotations", {}).get(
+                        "summary", ""
+                    )
+                    lines.append(
+                        f"  [{state.upper()}] {name} "
+                        f"(Severity: {severity})"
+                    )
                     if summary:
                         lines.append(f"    {summary}")
             lines.append("")
@@ -505,7 +610,9 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
                 fields = issue.get("fields", {})
                 summary = fields.get("summary", "No summary")
                 status = fields.get("status", {}).get("name", "Unknown")
-                lines.append(f"  {issue_key}: {summary} (Status: {status})")
+                lines.append(
+                    f"  {issue_key}: {summary} (Status: {status})"
+                )
             lines.append("")
 
         elif key == "acknowledge" and isinstance(parsed, dict):
@@ -561,6 +668,11 @@ def _format_incident_data(incident_data: dict[str, Any]) -> str:
                 lines.append(str(parsed))
             lines.append("")
 
+    # Append LLM analysis section if available
+    llm_section: str = _format_llm_analysis(raw)
+    if llm_section:
+        lines.append(llm_section)
+
     return "\n".join(lines)
 
 
@@ -591,17 +703,26 @@ async def synthesize_response(state: InfraState) -> dict:
             parts.append(_format_k8s_data(state.k8s_data))
         elif state.k8s_data:
             # Fallback for unexpected k8s_data format
-            parts.append(f"## Kubernetes\n{json.dumps(state.k8s_data, indent=2, default=str)}")
+            parts.append(
+                f"## Kubernetes\n"
+                f"{json.dumps(state.k8s_data, indent=2, default=str)}"
+            )
 
         if state.gpu_data and state.gpu_data.get("raw"):
             parts.append(_format_gpu_data(state.gpu_data))
         elif state.gpu_data:
-            parts.append(f"## GPU\n{json.dumps(state.gpu_data, indent=2, default=str)}")
+            parts.append(
+                f"## GPU\n"
+                f"{json.dumps(state.gpu_data, indent=2, default=str)}"
+            )
 
         if state.incident_data and state.incident_data.get("raw"):
             parts.append(_format_incident_data(state.incident_data))
         elif state.incident_data:
-            parts.append(f"## Incident\n{json.dumps(state.incident_data, indent=2, default=str)}")
+            parts.append(
+                f"## Incident\n"
+                f"{json.dumps(state.incident_data, indent=2, default=str)}"
+            )
     except Exception as exc:
         logger.error("Error formatting response: %s", exc)
         # Fallback to raw dict representation

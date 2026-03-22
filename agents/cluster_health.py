@@ -6,7 +6,8 @@ Responsibilities:
 - Detect resource bottlenecks (CPU/memory)
 - Report on node health and capacity
 
-Dispatches queries to the appropriate k8s MCP tools via keyword matching.
+Dispatches queries to the appropriate k8s MCP tools via keyword matching,
+then optionally enhances results with LLM-powered analysis when available.
 """
 
 from __future__ import annotations
@@ -35,6 +36,14 @@ from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod, k8s_list_pods
 from mcp_servers.k8s_mcp.tools.services import k8s_list_services
 
 logger = logging.getLogger(__name__)
+
+# System prompt for LLM-powered analysis of Kubernetes cluster data.
+_K8S_LLM_SYSTEM_PROMPT: str = (
+    "You are a Kubernetes cluster health specialist. "
+    "Analyze the cluster data and highlight any issues, failing pods, "
+    "resource pressure, or recommendations. "
+    "Be concise and actionable."
+)
 
 
 def _parse_namespace(query: str) -> str:
@@ -168,6 +177,8 @@ async def cluster_health_agent(state: dict) -> dict:
 
     Parses the user query to determine which Kubernetes tools to invoke,
     calls them with appropriate parameters, and returns structured results.
+    When an LLM provider is available, appends an AI-generated analysis
+    of the collected data.
 
     Keyword dispatch rules:
     - "list pods" / "pods" / "show pods" -> k8s_list_pods
@@ -216,7 +227,9 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["scale_deployment"] = result_str
             tools_called.append("k8s_scale_deployment")
-            actions.append(f"cluster_health_agent: scaled {deploy_name} to {replicas} replicas")
+            actions.append(
+                f"cluster_health_agent: scaled {deploy_name} to {replicas} replicas"
+            )
         else:
             actions.append(
                 "cluster_health_agent: scale requested but could not parse "
@@ -230,7 +243,9 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["deployments"] = result_str
             tools_called.append("k8s_list_deployments")
-            actions.append("cluster_health_agent: listed deployments (fallback for scale)")
+            actions.append(
+                "cluster_health_agent: listed deployments (fallback for scale)"
+            )
 
     # --- Restart deployment ---
     elif "restart" in query_lower:
@@ -246,10 +261,13 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["restart_deployment"] = result_str
             tools_called.append("k8s_restart_deployment")
-            actions.append(f"cluster_health_agent: restarted deployment {deploy_name}")
+            actions.append(
+                f"cluster_health_agent: restarted deployment {deploy_name}"
+            )
         else:
             actions.append(
-                "cluster_health_agent: restart requested but could not parse deployment name"
+                "cluster_health_agent: restart requested but could not parse "
+                "deployment name"
             )
             result_str = await _safe_call(
                 k8s_list_deployments,
@@ -258,7 +276,9 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["deployments"] = result_str
             tools_called.append("k8s_list_deployments")
-            actions.append("cluster_health_agent: listed deployments (fallback for restart)")
+            actions.append(
+                "cluster_health_agent: listed deployments (fallback for restart)"
+            )
 
     # --- Describe pod ---
     elif "describe" in query_lower:
@@ -271,9 +291,13 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["describe_pod"] = result_str
             tools_called.append("k8s_describe_pod")
-            actions.append(f"cluster_health_agent: described pod {pod_name} in {namespace}")
+            actions.append(
+                f"cluster_health_agent: described pod {pod_name} in {namespace}"
+            )
         else:
-            actions.append("cluster_health_agent: describe requested but no pod name found")
+            actions.append(
+                "cluster_health_agent: describe requested but no pod name found"
+            )
             result_str = await _safe_call(
                 k8s_list_pods,
                 K8sListPodsInput(namespace=namespace),
@@ -281,7 +305,9 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["pods"] = result_str
             tools_called.append("k8s_list_pods")
-            actions.append("cluster_health_agent: listed pods (fallback for describe)")
+            actions.append(
+                "cluster_health_agent: listed pods (fallback for describe)"
+            )
 
     # --- Pod logs ---
     elif any(kw in query_lower for kw in ("log", "logs")):
@@ -304,9 +330,13 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["pod_logs"] = result_str
             tools_called.append("k8s_get_pod_logs")
-            actions.append(f"cluster_health_agent: fetched logs for pod {pod_name}")
+            actions.append(
+                f"cluster_health_agent: fetched logs for pod {pod_name}"
+            )
         else:
-            actions.append("cluster_health_agent: logs requested but no pod name found")
+            actions.append(
+                "cluster_health_agent: logs requested but no pod name found"
+            )
             result_str = await _safe_call(
                 k8s_list_pods,
                 K8sListPodsInput(namespace=namespace),
@@ -314,7 +344,9 @@ async def cluster_health_agent(state: dict) -> dict:
             )
             results["pods"] = result_str
             tools_called.append("k8s_list_pods")
-            actions.append("cluster_health_agent: listed pods (fallback for logs)")
+            actions.append(
+                "cluster_health_agent: listed pods (fallback for logs)"
+            )
 
     # --- List services ---
     elif any(kw in query_lower for kw in ("service", "svc")):
@@ -336,10 +368,14 @@ async def cluster_health_agent(state: dict) -> dict:
         )
         results["deployments"] = result_str
         tools_called.append("k8s_list_deployments")
-        actions.append(f"cluster_health_agent: listed deployments in {namespace}")
+        actions.append(
+            f"cluster_health_agent: listed deployments in {namespace}"
+        )
 
     # --- List pods (explicit) ---
-    elif any(kw in query_lower for kw in ("pod", "pods", "list pods", "show pods")):
+    elif any(
+        kw in query_lower for kw in ("pod", "pods", "list pods", "show pods")
+    ):
         result_str = await _safe_call(
             k8s_list_pods,
             K8sListPodsInput(namespace=namespace),
@@ -366,7 +402,22 @@ async def cluster_health_agent(state: dict) -> dict:
         )
         results["deployments"] = deploy_str
         tools_called.append("k8s_list_deployments")
-        actions.append(f"cluster_health_agent: fetched cluster overview for {namespace}")
+        actions.append(
+            f"cluster_health_agent: fetched cluster overview for {namespace}"
+        )
+
+    # --- LLM-powered analysis (optional enhancement) ---
+    from agents.llm_analysis import generate_llm_analysis
+
+    llm_text: str | None = await generate_llm_analysis(
+        query=query,
+        results=results,
+        system_prompt=_K8S_LLM_SYSTEM_PROMPT,
+        agent_name="cluster_health_agent",
+    )
+    if llm_text is not None:
+        results["llm_analysis"] = llm_text
+        actions.append("cluster_health_agent: LLM analysis generated")
 
     logger.info(
         "cluster_health_agent completed",
@@ -380,5 +431,7 @@ async def cluster_health_agent(state: dict) -> dict:
             "namespace": namespace,
         },
         "actions_taken": actions
-        or [f"cluster_health_agent: processed query in namespace {namespace}"],
+        or [
+            f"cluster_health_agent: processed query in namespace {namespace}"
+        ],
     }

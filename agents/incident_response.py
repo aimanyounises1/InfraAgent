@@ -7,7 +7,8 @@ Responsibilities:
 - Create/update Jira tickets
 - Acknowledge/resolve PagerDuty incidents
 
-Dispatches queries to the appropriate incident MCP tools via keyword matching.
+Dispatches queries to the appropriate incident MCP tools via keyword matching,
+then optionally enhances results with LLM-powered analysis when available.
 """
 
 from __future__ import annotations
@@ -43,6 +44,15 @@ from mcp_servers.incident_mcp.tools.pagerduty_tools import (
 from mcp_servers.incident_mcp.tools.rca import incident_generate_rca
 
 logger = logging.getLogger(__name__)
+
+# System prompt for LLM-powered analysis of incident data.
+_INCIDENT_LLM_SYSTEM_PROMPT: str = (
+    "You are an incident response specialist. "
+    "Analyze the incident data and provide: severity assessment, "
+    "correlation between alerts, recommended next steps, "
+    "and escalation guidance. "
+    "Be concise and actionable."
+)
 
 
 def _parse_incident_id(query: str) -> str | None:
@@ -202,17 +212,19 @@ async def incident_response_agent(state: dict) -> dict:
 
     Parses the user query to determine which incident tools to invoke,
     calls them with appropriate parameters, and returns structured results.
+    When an LLM provider is available, appends an AI-generated analysis
+    of the collected data.
 
     Keyword dispatch rules:
-    - "create ticket" / "create jira" / "open ticket" -> incident_jira_create_ticket
+    - "create ticket" / "create jira" / "open ticket" -> jira_create_ticket
     - "search" / "find ticket" / "past incident" -> incident_jira_search
     - "alert" / "alerts" / "firing" -> incident_grafana_get_alerts
     - "metric" / "grafana" / "query" -> incident_grafana_query
-    - "pagerduty" / "pd" / "on-call" / "active incidents" -> incident_pagerduty_list_incidents
+    - "pagerduty" / "pd" / "on-call" -> incident_pagerduty_list_incidents
     - "acknowledge" / "ack" -> incident_pagerduty_acknowledge
     - "resolve" -> incident_pagerduty_resolve
     - "rca" / "root cause" / "analysis" -> incident_generate_rca
-    - Default: incident_pagerduty_list_incidents + incident_grafana_get_alerts
+    - Default: pagerduty_list_incidents + grafana_get_alerts
 
     Args:
         state: The current InfraState as a dict (includes "query" key).
@@ -221,7 +233,9 @@ async def incident_response_agent(state: dict) -> dict:
         Dict with "incident_data" containing raw results and tools called,
         plus "actions_taken" list.
     """
-    query: str = state.query if hasattr(state, "query") else state.get("query", "")
+    query: str = (
+        state.query if hasattr(state, "query") else state.get("query", "")
+    )
     if not query:
         logger.warning("incident_response_agent called with empty query")
         return {
@@ -230,7 +244,9 @@ async def incident_response_agent(state: dict) -> dict:
                 "tools_called": [],
                 "error": "Empty query",
             },
-            "actions_taken": ["incident_response_agent: received empty query"],
+            "actions_taken": [
+                "incident_response_agent: received empty query"
+            ],
         }
 
     query_lower: str = query.lower()
@@ -241,7 +257,12 @@ async def incident_response_agent(state: dict) -> dict:
     # --- Create Jira ticket ---
     if any(
         phrase in query_lower
-        for phrase in ("create ticket", "create jira", "open ticket", "open issue")
+        for phrase in (
+            "create ticket",
+            "create jira",
+            "open ticket",
+            "open issue",
+        )
     ):
         project_key = _parse_project_key(query)
         summary = _parse_ticket_summary(query)
@@ -259,11 +280,19 @@ async def incident_response_agent(state: dict) -> dict:
         )
         results["create_ticket"] = result_str
         tools_called.append("incident_jira_create_ticket")
-        actions.append(f"incident_response_agent: created Jira ticket in {project_key}")
+        actions.append(
+            f"incident_response_agent: created Jira ticket in {project_key}"
+        )
 
     # --- Search Jira ---
     elif any(
-        phrase in query_lower for phrase in ("search", "find ticket", "find issue", "past incident")
+        phrase in query_lower
+        for phrase in (
+            "search",
+            "find ticket",
+            "find issue",
+            "past incident",
+        )
     ):
         jql = _parse_jql(query)
         result_str = await _safe_call(
@@ -276,10 +305,14 @@ async def incident_response_agent(state: dict) -> dict:
         actions.append("incident_response_agent: searched Jira with JQL")
 
     # --- RCA ---
-    elif any(phrase in query_lower for phrase in ("rca", "root cause", "analysis")):
+    elif any(
+        phrase in query_lower
+        for phrase in ("rca", "root cause", "analysis")
+    ):
         # Extract incident summary for RCA from the query itself
         rca_summary = re.sub(
-            r"\b(?:generate|create|run)\s+(?:an?\s+)?(?:rca|root\s+cause\s+analysis)\s*(?:for|about|:)?\s*",
+            r"\b(?:generate|create|run)\s+(?:an?\s+)?"
+            r"(?:rca|root\s+cause\s+analysis)\s*(?:for|about|:)?\s*",
             "",
             query,
             flags=re.IGNORECASE,
@@ -307,10 +340,14 @@ async def incident_response_agent(state: dict) -> dict:
             )
             results["acknowledge"] = result_str
             tools_called.append("incident_pagerduty_acknowledge")
-            actions.append(f"incident_response_agent: acknowledged incident {incident_id}")
+            actions.append(
+                f"incident_response_agent: acknowledged incident "
+                f"{incident_id}"
+            )
         else:
             actions.append(
-                "incident_response_agent: acknowledge requested but no incident ID found"
+                "incident_response_agent: acknowledge requested "
+                "but no incident ID found"
             )
             # Fall back to listing incidents
             result_str = await _safe_call(
@@ -320,7 +357,10 @@ async def incident_response_agent(state: dict) -> dict:
             )
             results["incidents"] = result_str
             tools_called.append("incident_pagerduty_list_incidents")
-            actions.append("incident_response_agent: listed incidents (fallback for ack)")
+            actions.append(
+                "incident_response_agent: listed incidents "
+                "(fallback for ack)"
+            )
 
     # --- Resolve PagerDuty ---
     elif "resolve" in query_lower:
@@ -333,9 +373,14 @@ async def incident_response_agent(state: dict) -> dict:
             )
             results["resolve"] = result_str
             tools_called.append("incident_pagerduty_resolve")
-            actions.append(f"incident_response_agent: resolved incident {incident_id}")
+            actions.append(
+                f"incident_response_agent: resolved incident {incident_id}"
+            )
         else:
-            actions.append("incident_response_agent: resolve requested but no incident ID found")
+            actions.append(
+                "incident_response_agent: resolve requested "
+                "but no incident ID found"
+            )
             result_str = await _safe_call(
                 incident_pagerduty_list_incidents,
                 PagerDutyListIncidentsInput(),
@@ -343,7 +388,10 @@ async def incident_response_agent(state: dict) -> dict:
             )
             results["incidents"] = result_str
             tools_called.append("incident_pagerduty_list_incidents")
-            actions.append("incident_response_agent: listed incidents (fallback for resolve)")
+            actions.append(
+                "incident_response_agent: listed incidents "
+                "(fallback for resolve)"
+            )
 
     # --- Grafana alerts ---
     elif any(kw in query_lower for kw in ("alert", "alerts", "firing")):
@@ -377,7 +425,8 @@ async def incident_response_agent(state: dict) -> dict:
 
     # --- PagerDuty incidents ---
     elif any(
-        kw in query_lower for kw in ("pagerduty", "pd", "on-call", "active incident", "oncall")
+        kw in query_lower
+        for kw in ("pagerduty", "pd", "on-call", "active incident", "oncall")
     ):
         result_str = await _safe_call(
             incident_pagerduty_list_incidents,
@@ -386,7 +435,9 @@ async def incident_response_agent(state: dict) -> dict:
         )
         results["incidents"] = result_str
         tools_called.append("incident_pagerduty_list_incidents")
-        actions.append("incident_response_agent: listed PagerDuty incidents")
+        actions.append(
+            "incident_response_agent: listed PagerDuty incidents"
+        )
 
     # --- Default: overview (PD incidents + Grafana alerts) ---
     else:
@@ -410,6 +461,19 @@ async def incident_response_agent(state: dict) -> dict:
             "(PagerDuty incidents + Grafana alerts)"
         )
 
+    # --- LLM-powered analysis (optional enhancement) ---
+    from agents.llm_analysis import generate_llm_analysis
+
+    llm_text: str | None = await generate_llm_analysis(
+        query=query,
+        results=results,
+        system_prompt=_INCIDENT_LLM_SYSTEM_PROMPT,
+        agent_name="incident_response_agent",
+    )
+    if llm_text is not None:
+        results["llm_analysis"] = llm_text
+        actions.append("incident_response_agent: LLM analysis generated")
+
     logger.info(
         "incident_response_agent completed",
         extra={"tools_called": tools_called},
@@ -420,5 +484,6 @@ async def incident_response_agent(state: dict) -> dict:
             "raw": results,
             "tools_called": tools_called,
         },
-        "actions_taken": actions or ["incident_response_agent: processed incident query"],
+        "actions_taken": actions
+        or ["incident_response_agent: processed incident query"],
     }

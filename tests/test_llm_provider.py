@@ -64,7 +64,7 @@ class TestGetLlm:
             mod = _reload_provider_module()
             mod.get_llm("ollama")
             call_kwargs = mock_chat_ollama.call_args
-            assert call_kwargs.kwargs["model"] == "llama3.2"
+            assert call_kwargs.kwargs["model"] == "qwen2.5-coder:14b"
             assert "localhost:11434" in call_kwargs.kwargs["base_url"]
 
     def test_get_llm_ollama_custom_model(self) -> None:

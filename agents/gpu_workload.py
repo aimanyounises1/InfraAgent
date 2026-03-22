@@ -6,7 +6,8 @@ Responsibilities:
 - Suggest workload rebalancing across GPUs
 - Report on cluster-wide GPU efficiency
 
-Dispatches queries to the appropriate gpu MCP tools via keyword matching.
+Dispatches queries to the appropriate gpu MCP tools via keyword matching,
+then optionally enhances results with LLM-powered analysis when available.
 """
 
 from __future__ import annotations
@@ -33,6 +34,14 @@ from mcp_servers.gpu_mcp.tools.monitor import (
 from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
 logger = logging.getLogger(__name__)
+
+# System prompt for LLM-powered analysis of GPU workload data.
+_GPU_LLM_SYSTEM_PROMPT: str = (
+    "You are a GPU workload monitoring specialist. "
+    "Analyze GPU metrics and identify: overloaded devices, thermal concerns, "
+    "stuck jobs, memory pressure, or workload imbalance recommendations. "
+    "Be concise and actionable."
+)
 
 
 def _parse_device_index(query: str) -> int | None:
@@ -148,6 +157,8 @@ async def gpu_workload_agent(state: dict) -> dict:
 
     Parses the user query to determine which GPU tools to invoke,
     calls them with appropriate parameters, and returns structured results.
+    When an LLM provider is available, appends an AI-generated analysis
+    of the collected data.
 
     Keyword dispatch rules:
     - "list" / "devices" / "gpus" -> gpu_list_devices
@@ -166,11 +177,17 @@ async def gpu_workload_agent(state: dict) -> dict:
         Dict with "gpu_data" containing raw results and tools called,
         plus "actions_taken" list.
     """
-    query: str = state.query if hasattr(state, "query") else state.get("query", "")
+    query: str = (
+        state.query if hasattr(state, "query") else state.get("query", "")
+    )
     if not query:
         logger.warning("gpu_workload_agent called with empty query")
         return {
-            "gpu_data": {"raw": {}, "tools_called": [], "error": "Empty query"},
+            "gpu_data": {
+                "raw": {},
+                "tools_called": [],
+                "error": "Empty query",
+            },
             "actions_taken": ["gpu_workload_agent: received empty query"],
         }
 
@@ -181,7 +198,9 @@ async def gpu_workload_agent(state: dict) -> dict:
     actions: list[str] = []
 
     # --- List devices ---
-    if any(kw in query_lower for kw in ("list", "devices", "gpus", "all gpu")):
+    if any(
+        kw in query_lower for kw in ("list", "devices", "gpus", "all gpu")
+    ):
         result_str = await _safe_call(
             gpu_list_devices,
             GpuListDevicesInput(),
@@ -192,29 +211,50 @@ async def gpu_workload_agent(state: dict) -> dict:
         actions.append("gpu_workload_agent: listed all GPU devices")
 
     # --- Temperature ---
-    elif any(kw in query_lower for kw in ("temperature", "temp", "thermal", "heat")):
+    elif any(
+        kw in query_lower
+        for kw in ("temperature", "temp", "thermal", "heat")
+    ):
         result_str, names = await _per_device_call(
             gpu_get_temperature, "gpu_get_temperature", device_index
         )
         results["temperature"] = result_str
         tools_called.extend(names)
-        target = f"device {device_index}" if device_index is not None else "all devices"
-        actions.append(f"gpu_workload_agent: checked temperature for {target}")
+        target = (
+            f"device {device_index}"
+            if device_index is not None
+            else "all devices"
+        )
+        actions.append(
+            f"gpu_workload_agent: checked temperature for {target}"
+        )
 
     # --- Memory ---
     elif any(kw in query_lower for kw in ("memory", "vram", "mem")):
-        result_str, names = await _per_device_call(gpu_get_memory, "gpu_get_memory", device_index)
+        result_str, names = await _per_device_call(
+            gpu_get_memory, "gpu_get_memory", device_index
+        )
         results["memory"] = result_str
         tools_called.extend(names)
-        target = f"device {device_index}" if device_index is not None else "all devices"
+        target = (
+            f"device {device_index}"
+            if device_index is not None
+            else "all devices"
+        )
         actions.append(f"gpu_workload_agent: checked memory for {target}")
 
     # --- Power ---
     elif "power" in query_lower:
-        result_str, names = await _per_device_call(gpu_get_power, "gpu_get_power", device_index)
+        result_str, names = await _per_device_call(
+            gpu_get_power, "gpu_get_power", device_index
+        )
         results["power"] = result_str
         tools_called.extend(names)
-        target = f"device {device_index}" if device_index is not None else "all devices"
+        target = (
+            f"device {device_index}"
+            if device_index is not None
+            else "all devices"
+        )
         actions.append(f"gpu_workload_agent: checked power for {target}")
 
     # --- Health check ---
@@ -229,17 +269,27 @@ async def gpu_workload_agent(state: dict) -> dict:
         actions.append("gpu_workload_agent: ran GPU health check")
 
     # --- Processes / jobs ---
-    elif any(kw in query_lower for kw in ("process", "job", "running", "pid")):
+    elif any(
+        kw in query_lower for kw in ("process", "job", "running", "pid")
+    ):
         result_str, names = await _per_device_call(
             gpu_list_processes, "gpu_list_processes", device_index
         )
         results["processes"] = result_str
         tools_called.extend(names)
-        target = f"device {device_index}" if device_index is not None else "all devices"
-        actions.append(f"gpu_workload_agent: listed processes for {target}")
+        target = (
+            f"device {device_index}"
+            if device_index is not None
+            else "all devices"
+        )
+        actions.append(
+            f"gpu_workload_agent: listed processes for {target}"
+        )
 
     # --- Utilization / usage / load ---
-    elif any(kw in query_lower for kw in ("utilization", "usage", "load", "util")):
+    elif any(
+        kw in query_lower for kw in ("utilization", "usage", "load", "util")
+    ):
         result_str = await _safe_call(
             gpu_get_cluster_summary,
             GpuClusterSummaryInput(),
@@ -247,7 +297,9 @@ async def gpu_workload_agent(state: dict) -> dict:
         )
         results["cluster_summary"] = result_str
         tools_called.append("gpu_get_cluster_summary")
-        actions.append("gpu_workload_agent: fetched cluster utilization summary")
+        actions.append(
+            "gpu_workload_agent: fetched cluster utilization summary"
+        )
 
     # --- Default: overview ---
     else:
@@ -266,7 +318,22 @@ async def gpu_workload_agent(state: dict) -> dict:
         )
         results["health"] = health_str
         tools_called.append("gpu_health_check")
-        actions.append("gpu_workload_agent: fetched GPU overview (summary + health)")
+        actions.append(
+            "gpu_workload_agent: fetched GPU overview (summary + health)"
+        )
+
+    # --- LLM-powered analysis (optional enhancement) ---
+    from agents.llm_analysis import generate_llm_analysis
+
+    llm_text: str | None = await generate_llm_analysis(
+        query=query,
+        results=results,
+        system_prompt=_GPU_LLM_SYSTEM_PROMPT,
+        agent_name="gpu_workload_agent",
+    )
+    if llm_text is not None:
+        results["llm_analysis"] = llm_text
+        actions.append("gpu_workload_agent: LLM analysis generated")
 
     logger.info(
         "gpu_workload_agent completed",
@@ -278,5 +345,6 @@ async def gpu_workload_agent(state: dict) -> dict:
             "raw": results,
             "tools_called": tools_called,
         },
-        "actions_taken": actions or ["gpu_workload_agent: processed GPU query"],
+        "actions_taken": actions
+        or ["gpu_workload_agent: processed GPU query"],
     }
