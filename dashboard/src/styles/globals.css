@@ -16,7 +16,7 @@ body {
 
 /* Thin scrollbar for dark theme */
 .scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
+  width: 5px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-track {
@@ -25,7 +25,7 @@ body {
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
   background: #374151;
-  border-radius: 2px;
+  border-radius: 3px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {

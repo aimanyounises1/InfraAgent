@@ -78,27 +78,46 @@ def _get_gpu_util() -> int:
     Falls back to a small random baseline.
     """
     try:
-        gpu_proc_names = {"WindowServer", "MTLCompilerService"}
+        gpu_proc_names = {
+            "WindowServer", "MTLCompilerService",
+            "ollama_llama_server", "ollama", "Metal",
+        }
+        total_gpu = 0
         for proc in psutil.process_iter(["name", "cpu_percent"]):
             info = proc.info
             if info and info.get("name") in gpu_proc_names:
                 cpu_pct = info.get("cpu_percent")
                 if cpu_pct is not None and cpu_pct > 0:
-                    return min(100, int(cpu_pct))
+                    total_gpu += cpu_pct
+        if total_gpu > 0:
+            return min(100, int(total_gpu))
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         pass
     except Exception as exc:
         logger.debug("_get_gpu_util failed: %s", exc)
-    return random.randint(5, 20)
+    return random.randint(3, 12)
 
 
 def _get_neural_util() -> int:
     """Estimate Neural Engine utilization.
 
     On macOS the Neural Engine is used by CoreML / ANE processes.
-    Without private APIs we return a low baseline with jitter.
+    Ollama also uses Metal/ANE for inference on Apple Silicon.
     """
-    return random.randint(2, 15)
+    try:
+        ane_names = {"ollama_llama_server", "ollama", "coremlcompiler"}
+        total = 0
+        for proc in psutil.process_iter(["name", "cpu_percent"]):
+            info = proc.info
+            if info and info.get("name") in ane_names:
+                cpu_pct = info.get("cpu_percent")
+                if cpu_pct is not None:
+                    total += cpu_pct
+        if total > 0:
+            return min(100, int(total * 0.3))  # ANE share ~30% of load
+    except Exception:
+        pass
+    return random.randint(2, 10)
 
 
 # ---------------------------------------------------------------------------

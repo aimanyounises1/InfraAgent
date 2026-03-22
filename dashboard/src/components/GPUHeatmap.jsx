@@ -122,7 +122,7 @@ export default function GPUHeatmap() {
 
     intervalRef.current = setInterval(() => {
       fetchGpuStatus();
-    }, 10000);
+    }, 3000);  // Poll every 3s for real-time GPU monitoring
 
     return () => {
       if (intervalRef.current) {

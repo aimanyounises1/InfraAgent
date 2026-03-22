@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # --- Ollama (local) ---
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5-coder:14b"
+    ollama_model: str = "nemotron-3-nano"
 
     # --- NVIDIA NIM ---
     nvidia_api_key: str = ""
@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     # --- LLM Analysis ---
-    llm_analysis_timeout: int = 30  # seconds for LLM analysis calls
+    llm_analysis_timeout: int = 120  # seconds — nemotron-3-nano is large (24GB)
     llm_analysis_max_data_chars: int = 4000  # max chars of data sent to LLM
 
     model_config = {
