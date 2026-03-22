@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - INFRA_AGENT_ANTHROPIC_API_KEY=${INFRA_AGENT_ANTHROPIC_API_KEY}
+      - KUBECONFIG=/root/.kube/config
+      - INFRA_AGENT_MOCK_GPU=true
+      - INFRA_AGENT_MOCK_JIRA=true
+      - INFRA_AGENT_MOCK_GRAFANA=true
+      - INFRA_AGENT_MOCK_PAGERDUTY=true
+    volumes:
+      - ~/.kube:/root/.kube:ro
+    depends_on:
+      - k8s-mcp
+      - gpu-mcp
+      - incident-mcp
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  k8s-mcp:
+    build: .
+    command: python -m mcp_servers.k8s_mcp.server
+    environment:
+      - KUBECONFIG=/root/.kube/config
+    volumes:
+      - ~/.kube:/root/.kube:ro
+
+  gpu-mcp:
+    build: .
+    command: python -m mcp_servers.gpu_mcp.server
+    environment:
+      - INFRA_AGENT_MOCK_GPU=true
+
+  incident-mcp:
+    build: .
+    command: python -m mcp_servers.incident_mcp.server
+    environment:
+      - INFRA_AGENT_MOCK_JIRA=true
+      - INFRA_AGENT_MOCK_GRAFANA=true
+      - INFRA_AGENT_MOCK_PAGERDUTY=true
+      - INFRA_AGENT_JIRA_URL=${INFRA_AGENT_JIRA_URL:-}
+      - INFRA_AGENT_JIRA_TOKEN=${INFRA_AGENT_JIRA_TOKEN:-}
+      - INFRA_AGENT_GRAFANA_URL=${INFRA_AGENT_GRAFANA_URL:-}
+      - INFRA_AGENT_GRAFANA_TOKEN=${INFRA_AGENT_GRAFANA_TOKEN:-}
+      - INFRA_AGENT_PAGERDUTY_TOKEN=${INFRA_AGENT_PAGERDUTY_TOKEN:-}

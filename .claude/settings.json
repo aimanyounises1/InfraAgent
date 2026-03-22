@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Bash(pytest*)",
+      "Bash(ruff*)",
+      "Bash(mypy*)",
+      "Bash(pip install*)",
+      "Bash(uvicorn*)",
+      "Bash(python -m*)",
+      "Bash(docker*)",
+      "Bash(git*)",
+      "Bash(npm*)",
+      "Bash(npx*)",
+      "Glob",
+      "Grep"
+    ]
+  }
+}

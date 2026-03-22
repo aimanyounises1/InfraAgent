@@ -1,0 +1,68 @@
+[project]
+name = "infra-agent"
+version = "0.1.0"
+description = "Agentic AI Platform for Infrastructure Operations"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=3.0",
+    "langgraph>=1.0",
+    "langchain>=1.0",
+    "langchain-anthropic>=0.4",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "kubernetes>=31.0",
+    "pynvml>=12.0",
+    "httpx>=0.28",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "websockets>=14.0",
+    "prometheus-client>=0.22",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.14",
+    "respx>=0.22",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+ollama = ["langchain-ollama>=0.3"]
+nvidia = ["langchain-nvidia-ai-endpoints>=0.3"]
+openai = ["langchain-openai>=0.3"]
+gemini = ["langchain-google-genai>=2.0"]
+all-llm = [
+    "langchain-ollama>=0.3",
+    "langchain-nvidia-ai-endpoints>=0.3",
+    "langchain-openai>=0.3",
+    "langchain-google-genai>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mcp_servers*", "agents*", "api*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "A", "SIM", "TCH"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
