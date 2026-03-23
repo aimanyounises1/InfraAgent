@@ -43,4 +43,11 @@ Thumbs.db
 
 # ruff
 .ruff_cache/
+
+# CI
 .github/workflows/
+
+# Claude Code
+CLAUDE.md
+NEXT_STEP_PROMPT.md
+.claude/

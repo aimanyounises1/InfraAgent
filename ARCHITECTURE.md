@@ -126,6 +126,6 @@ Bandwidth:
 - **DCGM over nvidia-smi**: Programmatic access to deep GPU diagnostics (XID, ECC, NVLink) vs. parsing CLI output
 - **Slurm REST API**: Modern slurmrestd integration instead of SSH + CLI parsing
 - **LangGraph over simple chains**: Stateful, checkpointable graph supports complex multi-step HPC workflows
-- **Mock modes everywhere**: Every external dependency has a mock toggle — simulates a 4-node DGX H100 cluster for demos
+- **Auto-detection everywhere**: Every external dependency is auto-detected at startup — returns clear errors with installation hints when unavailable
 - **Pydantic everywhere**: Type-safe inputs, validated at the MCP tool boundary
 - **Multi-LLM support**: NVIDIA NIM for on-prem HPC, Ollama for air-gapped clusters, cloud LLMs as fallback
