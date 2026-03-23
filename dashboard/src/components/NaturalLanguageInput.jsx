@@ -351,7 +351,7 @@ function AssistantBubble({ content, intent, actions_taken, timestamp }) {
 // ---------------------------------------------------------------------------
 // WelcomeScreen -- Shown when there are no messages yet.
 // ---------------------------------------------------------------------------
-function WelcomeScreen() {
+function WelcomeScreen({ onSuggestionClick }) {
   const suggestions = [
     'Show cluster status',
     'Check GPU health',
@@ -375,8 +375,8 @@ function WelcomeScreen() {
           <button
             key={s}
             type="button"
-            className="px-3 py-1.5 rounded-lg text-xs font-mono text-gray-400 bg-bg-tertiary/60 border border-gray-800/60 hover:border-accent-green/30 hover:text-accent-green transition-colors cursor-default"
-            tabIndex={-1}
+            onClick={() => onSuggestionClick(s)}
+            className="px-3 py-1.5 rounded-lg text-xs font-mono text-gray-400 bg-bg-tertiary/60 border border-gray-800/60 hover:border-accent-green/30 hover:text-accent-green transition-colors cursor-pointer"
           >
             {s}
           </button>
@@ -392,11 +392,37 @@ function WelcomeScreen() {
 // Renders a scrollable conversation history with user/assistant bubbles,
 // an inline markdown renderer, and a bottom-pinned input area.
 // ---------------------------------------------------------------------------
+// Chat history persistence key
+const CHAT_STORAGE_KEY = 'infraagent-chat-history';
+
+function loadPersistedMessages() {
+  try {
+    const raw = sessionStorage.getItem(CHAT_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistMessages(msgs) {
+  try {
+    sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(msgs));
+  } catch { /* storage full — ignore */ }
+}
+
+// SSE stream timeout (ms)
+const STREAM_TIMEOUT_MS = 90_000;
+
 export default function NaturalLanguageInput() {
   const [query, setQuery] = useState('');
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(loadPersistedMessages);
   const { sendQueryStream, loading } = useInfraAgent();
   const [streamingText, setStreamingText] = useState('');
+
+  // Persist messages to sessionStorage on every change
+  useEffect(() => {
+    persistMessages(messages);
+  }, [messages]);
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -434,7 +460,19 @@ export default function NaturalLanguageInput() {
   }
 
   // -------------------------------------------------------------------------
-  // Submit handler
+  // Quick-action suggestion click handler
+  // -------------------------------------------------------------------------
+  const handleSuggestionClick = useCallback((text) => {
+    setQuery(text);
+    // Auto-submit after setting query via a synthetic form submission
+    setTimeout(() => {
+      const form = inputRef.current?.closest('form');
+      if (form) form.requestSubmit();
+    }, 50);
+  }, []);
+
+  // -------------------------------------------------------------------------
+  // Submit handler (with timeout for SSE recovery)
   // -------------------------------------------------------------------------
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -455,6 +493,7 @@ export default function NaturalLanguageInput() {
     const assistantId = nextId();
     let toolContent = '';
     let streamContent = '';
+    let streamFinished = false;
 
     setMessages((prev) => [...prev, {
       id: assistantId,
@@ -466,50 +505,90 @@ export default function NaturalLanguageInput() {
       streaming: true,
     }]);
 
-    await sendQueryStream(trimmed, (event) => {
-      if (event.type === 'status') {
-        setStreamingText(event.status === 'classifying' ? 'Classifying query...' : 'Analyzing with Nemotron...');
-      } else if (event.type === 'tool_result') {
-        toolContent = event.data.response || '';
+    // Timeout guard: if SSE doesn't complete in time, show error
+    const timeoutId = setTimeout(() => {
+      if (!streamFinished) {
+        streamFinished = true;
         setMessages((prev) => prev.map((m) =>
-          m.id === assistantId ? {
+          m.id === assistantId && m.streaming ? {
             ...m,
-            content: toolContent,
-            intent: event.data.intent || 'unknown',
-            actions_taken: event.data.actions_taken || [],
-            streaming: true,
-          } : m
-        ));
-      } else if (event.type === 'token') {
-        streamContent = event.full;
-        setMessages((prev) => prev.map((m) =>
-          m.id === assistantId ? {
-            ...m,
-            content: toolContent + '\n\n## AI Analysis\n\n' + streamContent + '▊',
-            streaming: true,
-          } : m
-        ));
-      } else if (event.type === 'done') {
-        setMessages((prev) => prev.map((m) =>
-          m.id === assistantId ? {
-            ...m,
-            content: event.data?.response || toolContent + (streamContent ? '\n\n## AI Analysis\n\n' + streamContent : ''),
+            content: toolContent || 'Request timed out. The backend may be slow or unreachable.',
+            intent: toolContent ? m.intent : 'error',
             streaming: false,
           } : m
         ));
-      } else if (event.type === 'error') {
+        setStreamingText('');
+      }
+    }, STREAM_TIMEOUT_MS);
+
+    try {
+      await sendQueryStream(trimmed, (event) => {
+        if (streamFinished) return;
+
+        if (event.type === 'status') {
+          setStreamingText(event.status === 'classifying' ? 'Classifying query...' : 'Analyzing with Nemotron...');
+        } else if (event.type === 'tool_result') {
+          toolContent = event.data.response || '';
+          setMessages((prev) => prev.map((m) =>
+            m.id === assistantId ? {
+              ...m,
+              content: toolContent,
+              intent: event.data.intent || 'unknown',
+              actions_taken: event.data.actions_taken || [],
+              streaming: true,
+            } : m
+          ));
+        } else if (event.type === 'token') {
+          streamContent = event.full;
+          setMessages((prev) => prev.map((m) =>
+            m.id === assistantId ? {
+              ...m,
+              content: toolContent + '\n\n## AI Analysis\n\n' + streamContent + '▊',
+              streaming: true,
+            } : m
+          ));
+        } else if (event.type === 'done') {
+          streamFinished = true;
+          clearTimeout(timeoutId);
+          setMessages((prev) => prev.map((m) =>
+            m.id === assistantId ? {
+              ...m,
+              content: event.data?.response || toolContent + (streamContent ? '\n\n## AI Analysis\n\n' + streamContent : ''),
+              streaming: false,
+            } : m
+          ));
+        } else if (event.type === 'error') {
+          streamFinished = true;
+          clearTimeout(timeoutId);
+          setMessages((prev) => prev.map((m) =>
+            m.id === assistantId ? {
+              ...m,
+              content: `Error: ${event.error}`,
+              intent: 'error',
+              streaming: false,
+            } : m
+          ));
+        }
+      });
+    } catch (err) {
+      if (!streamFinished) {
+        streamFinished = true;
+        clearTimeout(timeoutId);
         setMessages((prev) => prev.map((m) =>
-          m.id === assistantId ? {
+          m.id === assistantId && m.streaming ? {
             ...m,
-            content: `Error: ${event.error}`,
+            content: `Connection error: ${err.message || 'Backend unreachable'}. Please try again.`,
             intent: 'error',
             streaming: false,
           } : m
         ));
       }
-    });
+    }
 
     // Finalize if stream ended without done event
+    if (!streamFinished) {
+      clearTimeout(timeoutId);
+    }
     setMessages((prev) => prev.map((m) =>
       m.id === assistantId && m.streaming ? { ...m, streaming: false, content: m.content.replace('▊', '') } : m
     ));
@@ -547,7 +626,7 @@ export default function NaturalLanguageInput() {
         className="flex-1 overflow-y-auto scrollbar-thin relative"
       >
         {messages.length === 0 && !loading ? (
-          <WelcomeScreen />
+          <WelcomeScreen onSuggestionClick={handleSuggestionClick} />
         ) : (
           <div className="px-4 py-4 space-y-4">
             {messages.map((msg) =>
