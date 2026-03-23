@@ -395,7 +395,8 @@ function WelcomeScreen() {
 export default function NaturalLanguageInput() {
   const [query, setQuery] = useState('');
   const [messages, setMessages] = useState([]);
-  const { sendQuery, loading } = useInfraAgent();
+  const { sendQueryStream, loading } = useInfraAgent();
+  const [streamingText, setStreamingText] = useState('');
 
   const messagesEndRef = useRef(null);
   const scrollContainerRef = useRef(null);
@@ -450,24 +451,71 @@ export default function NaturalLanguageInput() {
     setMessages((prev) => [...prev, userMsg]);
     setQuery('');
 
-    // Send to API
-    const result = await sendQuery(trimmed);
+    // Stream from API with token-by-token updates
+    const assistantId = nextId();
+    let toolContent = '';
+    let streamContent = '';
 
-    const assistantMsg = {
-      id: nextId(),
+    setMessages((prev) => [...prev, {
+      id: assistantId,
       role: 'assistant',
-      content: result?.response || 'Failed to get a response. Please try again.',
-      intent: result?.intent || 'error',
-      actions_taken: result?.actions_taken || [],
+      content: '',
+      intent: 'loading',
+      actions_taken: [],
       timestamp: timeNow(),
-    };
+      streaming: true,
+    }]);
 
-    setMessages((prev) => [...prev, assistantMsg]);
+    await sendQueryStream(trimmed, (event) => {
+      if (event.type === 'status') {
+        setStreamingText(event.status === 'classifying' ? 'Classifying query...' : 'Analyzing with Nemotron...');
+      } else if (event.type === 'tool_result') {
+        toolContent = event.data.response || '';
+        setMessages((prev) => prev.map((m) =>
+          m.id === assistantId ? {
+            ...m,
+            content: toolContent,
+            intent: event.data.intent || 'unknown',
+            actions_taken: event.data.actions_taken || [],
+            streaming: true,
+          } : m
+        ));
+      } else if (event.type === 'token') {
+        streamContent = event.full;
+        setMessages((prev) => prev.map((m) =>
+          m.id === assistantId ? {
+            ...m,
+            content: toolContent + '\n\n## AI Analysis\n\n' + streamContent + '▊',
+            streaming: true,
+          } : m
+        ));
+      } else if (event.type === 'done') {
+        setMessages((prev) => prev.map((m) =>
+          m.id === assistantId ? {
+            ...m,
+            content: event.data?.response || toolContent + (streamContent ? '\n\n## AI Analysis\n\n' + streamContent : ''),
+            streaming: false,
+          } : m
+        ));
+      } else if (event.type === 'error') {
+        setMessages((prev) => prev.map((m) =>
+          m.id === assistantId ? {
+            ...m,
+            content: `Error: ${event.error}`,
+            intent: 'error',
+            streaming: false,
+          } : m
+        ));
+      }
+    });
 
-    // Re-focus input after response
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
+    // Finalize if stream ended without done event
+    setMessages((prev) => prev.map((m) =>
+      m.id === assistantId && m.streaming ? { ...m, streaming: false, content: m.content.replace('▊', '') } : m
+    ));
+    setStreamingText('');
+
+    if (inputRef.current) inputRef.current.focus();
   };
 
   // -------------------------------------------------------------------------

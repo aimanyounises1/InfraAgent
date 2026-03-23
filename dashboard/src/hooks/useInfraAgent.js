@@ -62,6 +62,88 @@ export default function useInfraAgent() {
   }, []);
 
   // ---------------------------------------------------------------------------
+  // POST /api/chat/stream (SSE streaming — token-by-token)
+  // ---------------------------------------------------------------------------
+  const sendQueryStream = useCallback(async (query, onToken) => {
+    if (!query || typeof query !== 'string' || query.trim().length === 0) {
+      setError('Query must be a non-empty string');
+      return null;
+    }
+
+    setLoading(true);
+    setError(null);
+    let fullAnalysis = '';
+
+    try {
+      const res = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: query.trim() }),
+      });
+
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let toolResult = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+
+              if (data.status) {
+                // Status update (classifying, analyzing)
+                if (onToken) onToken({ type: 'status', status: data.status });
+              } else if (data.intent) {
+                // Tool results arrived — show them immediately
+                toolResult = data;
+                setResponse(data);
+                if (onToken) onToken({ type: 'tool_result', data });
+              } else if (data.token) {
+                // LLM analysis token
+                fullAnalysis += data.token;
+                if (onToken) onToken({ type: 'token', token: data.token, full: fullAnalysis });
+              } else if (data.complete) {
+                // Streaming done
+                if (toolResult && fullAnalysis) {
+                  const final = {
+                    ...toolResult,
+                    response: toolResult.response + '\n\n## AI Analysis\n\n' + fullAnalysis,
+                  };
+                  setResponse(final);
+                  if (onToken) onToken({ type: 'done', data: final });
+                }
+              } else if (data.error) {
+                setError(data.error);
+                if (onToken) onToken({ type: 'error', error: data.error });
+              }
+            } catch {
+              // Skip malformed JSON lines
+            }
+          }
+        }
+      }
+
+      return toolResult;
+    } catch (err) {
+      setError(err.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ---------------------------------------------------------------------------
   // GET /api/k8s/pods?namespace=...
   // ---------------------------------------------------------------------------
   const fetchPods = useCallback(async (namespace = 'default') => {
@@ -295,6 +377,7 @@ export default function useInfraAgent() {
     loading,
     error,
     sendQuery,
+    sendQueryStream,
 
     // Kubernetes
     pods,
