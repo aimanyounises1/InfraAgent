@@ -53,9 +53,7 @@ async def describe_pod(pod_name: str, namespace: str = "default") -> str:
     from mcp_servers.k8s_mcp.models import K8sDescribePodInput
     from mcp_servers.k8s_mcp.tools.pods import k8s_describe_pod
 
-    return await k8s_describe_pod(
-        K8sDescribePodInput(pod_name=pod_name, namespace=namespace)
-    )
+    return await k8s_describe_pod(K8sDescribePodInput(pod_name=pod_name, namespace=namespace))
 
 
 @tool
@@ -99,9 +97,7 @@ async def list_deployments(namespace: str = "default") -> str:
     from mcp_servers.k8s_mcp.models import K8sListDeploymentsInput
     from mcp_servers.k8s_mcp.tools.deployments import k8s_list_deployments
 
-    return await k8s_list_deployments(
-        K8sListDeploymentsInput(namespace=namespace)
-    )
+    return await k8s_list_deployments(K8sListDeploymentsInput(namespace=namespace))
 
 
 @tool
@@ -170,9 +166,7 @@ async def list_services(namespace: str = "default") -> str:
     from mcp_servers.k8s_mcp.models import K8sListServicesInput
     from mcp_servers.k8s_mcp.tools.services import k8s_list_services
 
-    return await k8s_list_services(
-        K8sListServicesInput(namespace=namespace)
-    )
+    return await k8s_list_services(K8sListServicesInput(namespace=namespace))
 
 
 # ---------------------------------------------------------------------------
@@ -202,9 +196,7 @@ async def get_gpu_utilization(device_index: int = 0) -> str:
     from mcp_servers.gpu_mcp.models import GpuDeviceIndexInput
     from mcp_servers.gpu_mcp.tools.monitor import gpu_get_utilization
 
-    return await gpu_get_utilization(
-        GpuDeviceIndexInput(device_index=device_index)
-    )
+    return await gpu_get_utilization(GpuDeviceIndexInput(device_index=device_index))
 
 
 @tool
@@ -217,9 +209,7 @@ async def get_gpu_memory(device_index: int = 0) -> str:
     from mcp_servers.gpu_mcp.models import GpuDeviceIndexInput
     from mcp_servers.gpu_mcp.tools.monitor import gpu_get_memory
 
-    return await gpu_get_memory(
-        GpuDeviceIndexInput(device_index=device_index)
-    )
+    return await gpu_get_memory(GpuDeviceIndexInput(device_index=device_index))
 
 
 @tool
@@ -232,9 +222,7 @@ async def get_gpu_temperature(device_index: int = 0) -> str:
     from mcp_servers.gpu_mcp.models import GpuDeviceIndexInput
     from mcp_servers.gpu_mcp.tools.monitor import gpu_get_temperature
 
-    return await gpu_get_temperature(
-        GpuDeviceIndexInput(device_index=device_index)
-    )
+    return await gpu_get_temperature(GpuDeviceIndexInput(device_index=device_index))
 
 
 @tool
@@ -277,9 +265,7 @@ async def list_gpu_processes(device_index: int = 0) -> str:
     from mcp_servers.gpu_mcp.models import GpuDeviceIndexInput
     from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
-    return await gpu_list_processes(
-        GpuDeviceIndexInput(device_index=device_index)
-    )
+    return await gpu_list_processes(GpuDeviceIndexInput(device_index=device_index))
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +334,7 @@ async def get_grafana_alerts(state: str = "") -> str:
     from mcp_servers.incident_mcp.models import GrafanaGetAlertsInput
     from mcp_servers.incident_mcp.tools.grafana_tools import incident_grafana_get_alerts
 
-    return await incident_grafana_get_alerts(
-        GrafanaGetAlertsInput(state=state or None)
-    )
+    return await incident_grafana_get_alerts(GrafanaGetAlertsInput(state=state or None))
 
 
 @tool
@@ -382,9 +366,7 @@ async def list_pagerduty_incidents(status: str = "triggered,acknowledged") -> st
         incident_pagerduty_list_incidents,
     )
 
-    return await incident_pagerduty_list_incidents(
-        PagerDutyListIncidentsInput(status=status)
-    )
+    return await incident_pagerduty_list_incidents(PagerDutyListIncidentsInput(status=status))
 
 
 @tool
@@ -402,9 +384,7 @@ async def acknowledge_incident(incident_id: str) -> str:
         incident_pagerduty_acknowledge,
     )
 
-    return await incident_pagerduty_acknowledge(
-        PagerDutyAcknowledgeInput(incident_id=incident_id)
-    )
+    return await incident_pagerduty_acknowledge(PagerDutyAcknowledgeInput(incident_id=incident_id))
 
 
 @tool
@@ -422,9 +402,7 @@ async def resolve_incident(incident_id: str) -> str:
         incident_pagerduty_resolve,
     )
 
-    return await incident_pagerduty_resolve(
-        PagerDutyResolveInput(incident_id=incident_id)
-    )
+    return await incident_pagerduty_resolve(PagerDutyResolveInput(incident_id=incident_id))
 
 
 @tool
@@ -440,9 +418,7 @@ async def generate_rca(incident_summary: str) -> str:
     from mcp_servers.incident_mcp.models import GenerateRCAInput
     from mcp_servers.incident_mcp.tools.rca import incident_generate_rca
 
-    return await incident_generate_rca(
-        GenerateRCAInput(incident_summary=incident_summary)
-    )
+    return await incident_generate_rca(GenerateRCAInput(incident_summary=incident_summary))
 
 
 # ---------------------------------------------------------------------------
@@ -479,3 +455,105 @@ INCIDENT_TOOLS: list = [
     resolve_incident,
     generate_rca,
 ]
+
+# Aggregate of all tools — used by the ReAct planner/executor.
+ALL_TOOLS: list = K8S_TOOLS + GPU_TOOLS + INCIDENT_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Tool metadata — domain, destructiveness, read-only flags.
+# Used by the planner to flag approval gates and by the classifier
+# to validate intent → tool mapping.
+# ---------------------------------------------------------------------------
+
+TOOL_METADATA: dict[str, dict[str, object]] = {
+    # Kubernetes
+    "list_pods": {"domain": "kubernetes", "is_destructive": False, "is_read_only": True},
+    "describe_pod": {"domain": "kubernetes", "is_destructive": False, "is_read_only": True},
+    "get_pod_logs": {"domain": "kubernetes", "is_destructive": False, "is_read_only": True},
+    "list_deployments": {
+        "domain": "kubernetes",
+        "is_destructive": False,
+        "is_read_only": True,
+    },
+    "scale_deployment": {
+        "domain": "kubernetes",
+        "is_destructive": True,
+        "is_read_only": False,
+    },
+    "restart_deployment": {
+        "domain": "kubernetes",
+        "is_destructive": True,
+        "is_read_only": False,
+    },
+    "list_services": {
+        "domain": "kubernetes",
+        "is_destructive": False,
+        "is_read_only": True,
+    },
+    # GPU
+    "list_gpu_devices": {"domain": "gpu", "is_destructive": False, "is_read_only": True},
+    "get_gpu_utilization": {"domain": "gpu", "is_destructive": False, "is_read_only": True},
+    "get_gpu_memory": {"domain": "gpu", "is_destructive": False, "is_read_only": True},
+    "get_gpu_temperature": {"domain": "gpu", "is_destructive": False, "is_read_only": True},
+    "get_gpu_cluster_summary": {
+        "domain": "gpu",
+        "is_destructive": False,
+        "is_read_only": True,
+    },
+    "gpu_health_check": {"domain": "gpu", "is_destructive": False, "is_read_only": True},
+    "list_gpu_processes": {"domain": "gpu", "is_destructive": False, "is_read_only": True},
+    # Incident
+    "create_jira_ticket": {
+        "domain": "incident",
+        "is_destructive": False,
+        "is_read_only": False,
+    },
+    "search_jira": {"domain": "incident", "is_destructive": False, "is_read_only": True},
+    "get_grafana_alerts": {
+        "domain": "incident",
+        "is_destructive": False,
+        "is_read_only": True,
+    },
+    "query_grafana_metrics": {
+        "domain": "incident",
+        "is_destructive": False,
+        "is_read_only": True,
+    },
+    "list_pagerduty_incidents": {
+        "domain": "incident",
+        "is_destructive": False,
+        "is_read_only": True,
+    },
+    "acknowledge_incident": {
+        "domain": "incident",
+        "is_destructive": True,
+        "is_read_only": False,
+    },
+    "resolve_incident": {
+        "domain": "incident",
+        "is_destructive": True,
+        "is_read_only": False,
+    },
+    "generate_rca": {"domain": "incident", "is_destructive": False, "is_read_only": True},
+}
+
+# Domain label → tool-metadata domain values.
+_DOMAIN_MAP: dict[str, str] = {
+    "kubernetes": "kubernetes",
+    "gpu": "gpu",
+    "incident": "incident",
+}
+
+
+def get_tools_for_intents(intents: list[str]) -> list:
+    """Return tools matching the given intent domains.
+
+    Args:
+        intents: List of intent strings (e.g. ``["kubernetes", "gpu"]``).
+
+    Returns:
+        Combined list of tools whose domain matches any of the intents.
+    """
+    domains = {_DOMAIN_MAP.get(i, i) for i in intents}
+    return [t for t in ALL_TOOLS if TOOL_METADATA.get(t.name, {}).get("domain") in domains]

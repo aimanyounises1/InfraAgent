@@ -7,15 +7,21 @@ Run:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.logging_config import setup_logging
+from api.middleware.correlation import CorrelationMiddleware
 from config import settings
+
+# Initialise structured logging before anything else.
+setup_logging(level="INFO")
 
 app = FastAPI(
     title="InfraAgent API",
     description="Agentic AI Platform for Infrastructure Operations",
-    version="0.1.0",
+    version="2.0.0",
 )
 
-# CORS
+# --- Middleware (order matters: outermost first) ---
+app.add_middleware(CorrelationMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -39,4 +45,4 @@ app.include_router(ws_router)
 @app.get("/healthz")
 async def healthz() -> dict:
     """Health check endpoint."""
-    return {"status": "ok", "service": "infra-agent"}
+    return {"status": "ok", "service": "infra-agent", "version": "2.0.0"}

@@ -30,10 +30,7 @@ def _grafana_unavailable_response(exc: GrafanaUnavailableError) -> str:
         {
             "error": "Grafana not configured",
             "detail": str(exc),
-            "hint": (
-                "Set INFRA_AGENT_GRAFANA_URL and "
-                "INFRA_AGENT_GRAFANA_TOKEN in .env"
-            ),
+            "hint": ("Set INFRA_AGENT_GRAFANA_URL and INFRA_AGENT_GRAFANA_TOKEN in .env"),
         },
         indent=2,
     )
@@ -215,9 +212,7 @@ async def incident_grafana_get_dashboard(
 
     try:
         async with client:
-            resp = await client.get(
-                f"/api/dashboards/uid/{params.dashboard_uid}"
-            )
+            resp = await client.get(f"/api/dashboards/uid/{params.dashboard_uid}")
             resp.raise_for_status()
             data: dict = resp.json()
             logger.info(

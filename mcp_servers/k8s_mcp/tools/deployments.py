@@ -31,21 +31,21 @@ def _serialize_deployment(deploy: Any) -> dict[str, Any]:
     conditions: list[dict[str, Any]] = []
     if deploy.status and deploy.status.conditions:
         for c in deploy.status.conditions:
-            conditions.append({
-                "type": c.type,
-                "status": c.status,
-                "reason": c.reason or "",
-                "message": c.message or "",
-            })
+            conditions.append(
+                {
+                    "type": c.type,
+                    "status": c.status,
+                    "reason": c.reason or "",
+                    "message": c.message or "",
+                }
+            )
 
     return {
         "name": deploy.metadata.name,
         "namespace": deploy.metadata.namespace,
         "replicas": deploy.spec.replicas if deploy.spec else 0,
         "ready_replicas": (
-            deploy.status.ready_replicas
-            if deploy.status and deploy.status.ready_replicas
-            else 0
+            deploy.status.ready_replicas if deploy.status and deploy.status.ready_replicas else 0
         ),
         "available_replicas": (
             deploy.status.available_replicas
@@ -59,9 +59,7 @@ def _serialize_deployment(deploy: Any) -> dict[str, Any]:
         ),
         "labels": deploy.metadata.labels or {},
         "strategy": (
-            deploy.spec.strategy.type
-            if deploy.spec and deploy.spec.strategy
-            else "Unknown"
+            deploy.spec.strategy.type if deploy.spec and deploy.spec.strategy else "Unknown"
         ),
         "conditions": conditions,
     }
@@ -97,9 +95,7 @@ async def k8s_list_deployments(
             {
                 "error": "Kubernetes not available",
                 "detail": str(e),
-                "hint": (
-                    "Install kubectl and configure cluster access."
-                ),
+                "hint": ("Install kubectl and configure cluster access."),
             },
             indent=2,
         )
@@ -114,9 +110,7 @@ async def k8s_list_deployments(
             **kwargs,
         )
 
-        deployments = [
-            _serialize_deployment(d) for d in deploy_list.items
-        ]
+        deployments = [_serialize_deployment(d) for d in deploy_list.items]
         result = {
             "namespace": params.namespace,
             "deployment_count": len(deployments),
@@ -136,10 +130,7 @@ async def k8s_list_deployments(
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    "Failed to list deployments in namespace "
-                    f"'{params.namespace}'"
-                ),
+                "details": (f"Failed to list deployments in namespace '{params.namespace}'"),
             },
             indent=2,
         )
@@ -176,9 +167,7 @@ async def k8s_scale_deployment(
             {
                 "error": "Kubernetes not available",
                 "detail": str(e),
-                "hint": (
-                    "Install kubectl and configure cluster access."
-                ),
+                "hint": ("Install kubectl and configure cluster access."),
             },
             indent=2,
         )
@@ -227,10 +216,7 @@ async def k8s_scale_deployment(
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    "Failed to scale deployment "
-                    f"'{params.deployment_name}'"
-                ),
+                "details": (f"Failed to scale deployment '{params.deployment_name}'"),
             },
             indent=2,
         )
@@ -261,16 +247,12 @@ async def k8s_restart_deployment(
     try:
         _, apps_v1 = get_clients()
     except K8sUnavailableError as e:
-        logger.warning(
-            "k8s_restart_deployment: cluster unavailable"
-        )
+        logger.warning("k8s_restart_deployment: cluster unavailable")
         return json.dumps(
             {
                 "error": "Kubernetes not available",
                 "detail": str(e),
-                "hint": (
-                    "Install kubectl and configure cluster access."
-                ),
+                "hint": ("Install kubectl and configure cluster access."),
             },
             indent=2,
         )
@@ -284,9 +266,7 @@ async def k8s_restart_deployment(
                 "template": {
                     "metadata": {
                         "annotations": {
-                            "kubectl.kubernetes.io/restartedAt": (
-                                restart_time
-                            ),
+                            "kubectl.kubernetes.io/restartedAt": (restart_time),
                         }
                     }
                 }
@@ -324,10 +304,7 @@ async def k8s_restart_deployment(
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    "Failed to restart deployment "
-                    f"'{params.deployment_name}'"
-                ),
+                "details": (f"Failed to restart deployment '{params.deployment_name}'"),
             },
             indent=2,
         )

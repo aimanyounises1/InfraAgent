@@ -45,9 +45,7 @@ async def k8s_get_pod_logs(params: K8sGetPodLogsInput) -> str:
             {
                 "error": "Kubernetes not available",
                 "detail": str(e),
-                "hint": (
-                    "Install kubectl and configure cluster access."
-                ),
+                "hint": ("Install kubectl and configure cluster access."),
             },
             indent=2,
         )
@@ -74,9 +72,7 @@ async def k8s_get_pod_logs(params: K8sGetPodLogsInput) -> str:
             "container": params.container,
             "tail_lines": params.tail_lines,
             "since_seconds": params.since_seconds,
-            "log_lines": (
-                log_text.count("\n") + 1 if log_text else 0
-            ),
+            "log_lines": (log_text.count("\n") + 1 if log_text else 0),
             "logs": log_text or "",
         }
         logger.info(
@@ -89,16 +85,11 @@ async def k8s_get_pod_logs(params: K8sGetPodLogsInput) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(
-            "k8s_get_pod_logs error", extra={"error": str(e)}
-        )
+        logger.error("k8s_get_pod_logs error", extra={"error": str(e)})
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    f"Failed to get logs for pod "
-                    f"'{params.pod_name}'"
-                ),
+                "details": (f"Failed to get logs for pod '{params.pod_name}'"),
             },
             indent=2,
         )

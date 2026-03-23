@@ -66,9 +66,7 @@ async def incident_jira_create_ticket(params: JiraCreateTicketInput) -> str:
                         "content": [
                             {
                                 "type": "paragraph",
-                                "content": [
-                                    {"type": "text", "text": params.description}
-                                ],
+                                "content": [{"type": "text", "text": params.description}],
                             }
                         ],
                     },
@@ -212,9 +210,7 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
 
             # Update fields (assignee)
             if params.assignee:
-                field_payload = {
-                    "fields": {"assignee": {"emailAddress": params.assignee}}
-                }
+                field_payload = {"fields": {"assignee": {"emailAddress": params.assignee}}}
                 resp = await client.put(
                     f"/rest/api/3/issue/{params.issue_key}",
                     json=field_payload,
@@ -231,9 +227,7 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
                         "content": [
                             {
                                 "type": "paragraph",
-                                "content": [
-                                    {"type": "text", "text": params.comment}
-                                ],
+                                "content": [{"type": "text", "text": params.comment}],
                             }
                         ],
                     }
@@ -243,23 +237,15 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
                     json=comment_payload,
                 )
                 resp.raise_for_status()
-                updates_applied.append(
-                    f"comment added ({len(params.comment)} chars)"
-                )
+                updates_applied.append(f"comment added ({len(params.comment)} chars)")
 
             # Transition status
             if params.status:
-                resp = await client.get(
-                    f"/rest/api/3/issue/{params.issue_key}/transitions"
-                )
+                resp = await client.get(f"/rest/api/3/issue/{params.issue_key}/transitions")
                 resp.raise_for_status()
                 transitions: list[dict] = resp.json().get("transitions", [])
                 target = next(
-                    (
-                        t
-                        for t in transitions
-                        if t["name"].lower() == params.status.lower()
-                    ),
+                    (t for t in transitions if t["name"].lower() == params.status.lower()),
                     None,
                 )
                 if target:
@@ -272,8 +258,7 @@ async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
                 else:
                     available = [t["name"] for t in transitions]
                     updates_applied.append(
-                        f"status transition '{params.status}' not found; "
-                        f"available: {available}"
+                        f"status transition '{params.status}' not found; available: {available}"
                     )
 
             result: dict = {

@@ -1,8 +1,8 @@
 """Kubernetes client helpers -- auto-detects cluster availability.
 
-Provides lazily-initialized, cached CoreV1Api and AppsV1Api clients.
-Raises K8sUnavailableError when no kubeconfig or in-cluster config is found,
-so every tool can return a clear error instead of crashing.
+Provides lazily-initialized, cached CoreV1Api, AppsV1Api, and AutoscalingV2Api
+clients.  Raises K8sUnavailableError when no kubeconfig or in-cluster config
+is found, so every tool can return a clear error instead of crashing.
 """
 
 from __future__ import annotations
@@ -43,6 +43,38 @@ def get_clients() -> tuple[Any, Any]:
         apps_v1 = client.AppsV1Api()
         logger.info("Kubernetes client initialized successfully")
         return v1, apps_v1
+    except Exception as exc:
+        raise K8sUnavailableError(
+            f"Kubernetes not available: {exc}. "
+            "Set KUBECONFIG or run inside a cluster. "
+            "Install: pip install kubernetes && kubectl config view"
+        ) from exc
+
+
+@lru_cache(maxsize=1)
+def get_autoscaling_client() -> Any:
+    """Get a cached AutoscalingV2Api client.
+
+    Reuses the same cluster config established by ``get_clients()``.
+
+    Returns:
+        An ``AutoscalingV2Api`` client instance.
+
+    Raises:
+        K8sUnavailableError: If no kubeconfig or in-cluster config is found.
+    """
+    try:
+        from kubernetes import client
+        from kubernetes import config as k8s_config
+
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+
+        autoscaling_v2 = client.AutoscalingV2Api()
+        logger.info("Kubernetes AutoscalingV2Api client initialized successfully")
+        return autoscaling_v2
     except Exception as exc:
         raise K8sUnavailableError(
             f"Kubernetes not available: {exc}. "

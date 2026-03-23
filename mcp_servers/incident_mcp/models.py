@@ -87,3 +87,27 @@ class GenerateRCAInput(BaseModel):
     metrics_data: str | None = Field(default=None, description="Grafana metrics JSON")
     related_tickets: str | None = Field(default=None, description="Related Jira tickets JSON")
     timeline: str | None = Field(default=None, description="Event timeline JSON")
+
+
+# ---------------------------------------------------------------------------
+# Alert Correlation Models (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+class CorrelateAlertsInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    time_window_minutes: int = Field(default=30, ge=5, le=1440)
+    min_alerts: int = Field(default=2, ge=2, le=100)
+
+
+class DetectChangesInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    namespace: str = Field(default="default")
+    lookback_minutes: int = Field(default=60, ge=5, le=1440)
+
+
+class GeneratePostmortemInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    incident_id: str = Field(..., min_length=1)
+    include_metrics: bool = Field(default=True)
+    include_timeline: bool = Field(default=True)

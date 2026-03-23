@@ -52,9 +52,7 @@ def _build_rca_report(
                 "\n```\n\n"
             )
         except (json.JSONDecodeError, TypeError):
-            metrics_section = (
-                f"### Key Metrics\n```\n{metrics_data}\n```\n\n"
-            )
+            metrics_section = f"### Key Metrics\n```\n{metrics_data}\n```\n\n"
 
     tickets_section = ""
     if related_tickets:
@@ -64,22 +62,10 @@ def _build_rca_report(
                 ticket_lines: list[str] = []
                 for t in parsed_tickets:
                     key = t.get("key", "N/A")
-                    summary = t.get("fields", {}).get(
-                        "summary", t.get("summary", "N/A")
-                    )
-                    status = (
-                        t.get("fields", {})
-                        .get("status", {})
-                        .get("name", "Unknown")
-                    )
-                    ticket_lines.append(
-                        f"- **{key}**: {summary} (Status: {status})"
-                    )
-                tickets_section = (
-                    "### Related Tickets\n"
-                    + "\n".join(ticket_lines)
-                    + "\n\n"
-                )
+                    summary = t.get("fields", {}).get("summary", t.get("summary", "N/A"))
+                    status = t.get("fields", {}).get("status", {}).get("name", "Unknown")
+                    ticket_lines.append(f"- **{key}**: {summary} (Status: {status})")
+                tickets_section = "### Related Tickets\n" + "\n".join(ticket_lines) + "\n\n"
             else:
                 tickets_section = (
                     "### Related Tickets\n"
@@ -88,9 +74,7 @@ def _build_rca_report(
                     "\n```\n\n"
                 )
         except (json.JSONDecodeError, TypeError):
-            tickets_section = (
-                f"### Related Tickets\n```\n{related_tickets}\n```\n\n"
-            )
+            tickets_section = f"### Related Tickets\n```\n{related_tickets}\n```\n\n"
 
     timeline_section = ""
     if timeline:
@@ -100,16 +84,12 @@ def _build_rca_report(
                 tl_lines: list[str] = []
                 for entry in parsed_timeline:
                     ts = entry.get("timestamp", entry.get("time", ""))
-                    event = entry.get(
-                        "event", entry.get("description", str(entry))
-                    )
+                    event = entry.get("event", entry.get("description", str(entry)))
                     tl_lines.append(f"| {ts} | {event} |")
                 timeline_section = (
                     "### Timeline of Events\n"
                     "| Time | Event |\n"
-                    "|------|-------|\n"
-                    + "\n".join(tl_lines)
-                    + "\n\n"
+                    "|------|-------|\n" + "\n".join(tl_lines) + "\n\n"
                 )
             else:
                 timeline_section = (
@@ -119,9 +99,7 @@ def _build_rca_report(
                     "\n```\n\n"
                 )
         except (json.JSONDecodeError, TypeError):
-            timeline_section = (
-                f"### Timeline of Events\n```\n{timeline}\n```\n\n"
-            )
+            timeline_section = f"### Timeline of Events\n```\n{timeline}\n```\n\n"
 
     # -- Assemble full report ----------------------------------------------
 
@@ -236,9 +214,7 @@ async def incident_generate_rca(params: GenerateRCAInput) -> str:
         logger.info("RCA report generated successfully")
         return report
     except Exception as exc:
-        logger.error(
-            "Failed to generate RCA report", extra={"error": str(exc)}
-        )
+        logger.error("Failed to generate RCA report", extra={"error": str(exc)})
         return json.dumps(
             {
                 "error": "Failed to generate RCA report",

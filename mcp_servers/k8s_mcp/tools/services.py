@@ -38,11 +38,7 @@ def _serialize_service(svc: Any) -> dict[str, Any]:
             ports.append(port_info)
 
     external_ips: list[str] = []
-    if (
-        svc.status
-        and svc.status.load_balancer
-        and svc.status.load_balancer.ingress
-    ):
+    if svc.status and svc.status.load_balancer and svc.status.load_balancer.ingress:
         for ing in svc.status.load_balancer.ingress:
             if ing.ip:
                 external_ips.append(ing.ip)
@@ -89,9 +85,7 @@ async def k8s_list_services(params: K8sListServicesInput) -> str:
             {
                 "error": "Kubernetes not available",
                 "detail": str(e),
-                "hint": (
-                    "Install kubectl and configure cluster access."
-                ),
+                "hint": ("Install kubectl and configure cluster access."),
             },
             indent=2,
         )
@@ -115,16 +109,11 @@ async def k8s_list_services(params: K8sListServicesInput) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(
-            "k8s_list_services error", extra={"error": str(e)}
-        )
+        logger.error("k8s_list_services error", extra={"error": str(e)})
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    "Failed to list services in namespace "
-                    f"'{params.namespace}'"
-                ),
+                "details": (f"Failed to list services in namespace '{params.namespace}'"),
             },
             indent=2,
         )

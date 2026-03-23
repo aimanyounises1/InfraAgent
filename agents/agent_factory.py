@@ -10,8 +10,10 @@ create a compiled LangGraph agent that the LLM can use for tool calling.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+import operator
+from typing import Annotated, Any
 
 from langchain_core.messages import (
     AnyMessage,
@@ -21,11 +23,11 @@ from langchain_core.messages import (
 )
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
-from typing_extensions import Annotated
-
-import operator
 
 logger = logging.getLogger(__name__)
+
+# Default per-tool execution timeout (seconds).
+_TOOL_TIMEOUT: int = 30
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,7 @@ class AgentState(BaseModel):
     """State for tool-calling agent loop."""
 
     messages: Annotated[list[AnyMessage], operator.add] = []
+    iteration_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -69,27 +72,30 @@ def build_tool_agent(
     from agents.llm_provider import get_llm
 
     # Build tool lookup and bind tools to LLM
-    tools_by_name = {t.name: t for t in tools}
+    tools_by_name: dict[str, Any] = {t.name: t for t in tools}
     llm = get_llm()
     model_with_tools = llm.bind_tools(tools)
 
     sys_msg = SystemMessage(content=system_prompt)
 
-    # --- Node: call the LLM ---
-    def llm_call(state: dict) -> dict:
-        messages = state.get("messages", [])
-        response = model_with_tools.invoke([sys_msg] + messages)
-        return {"messages": [response]}
+    # --- Node: call the LLM (async) ---
+    async def llm_call(state: dict) -> dict:
+        messages: list[AnyMessage] = state.get("messages", [])
+        response = await model_with_tools.ainvoke([sys_msg] + messages)
+        return {
+            "messages": [response],
+            "iteration_count": state.get("iteration_count", 0) + 1,
+        }
 
-    # --- Node: execute tool calls ---
-    def tool_node(state: dict) -> dict:
-        messages = state.get("messages", [])
+    # --- Node: execute tool calls (async with timeout) ---
+    async def tool_node(state: dict) -> dict:
+        messages: list[AnyMessage] = state.get("messages", [])
         last_message = messages[-1]
         results: list[ToolMessage] = []
 
         for tool_call in last_message.tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
+            tool_name: str = tool_call["name"]
+            tool_args: dict[str, Any] = tool_call["args"]
 
             tool = tools_by_name.get(tool_name)
             if tool is None:
@@ -102,17 +108,31 @@ def build_tool_agent(
                 continue
 
             try:
-                observation = tool.invoke(tool_args)
+                observation = await asyncio.wait_for(
+                    tool.ainvoke(tool_args),
+                    timeout=_TOOL_TIMEOUT,
+                )
                 results.append(
                     ToolMessage(
                         content=str(observation),
                         tool_call_id=tool_call["id"],
                     )
                 )
-            except Exception as exc:
+            except TimeoutError:
                 logger.error(
-                    "%s: tool %s failed: %s", agent_name, tool_name, exc
+                    "%s: tool %s timed out after %ds",
+                    agent_name,
+                    tool_name,
+                    _TOOL_TIMEOUT,
                 )
+                results.append(
+                    ToolMessage(
+                        content=(f"Error: {tool_name} timed out after {_TOOL_TIMEOUT}s"),
+                        tool_call_id=tool_call["id"],
+                    )
+                )
+            except Exception as exc:
+                logger.error("%s: tool %s failed: %s", agent_name, tool_name, exc)
                 results.append(
                     ToolMessage(
                         content=f"Error executing {tool_name}: {exc}",
@@ -124,9 +144,24 @@ def build_tool_agent(
 
     # --- Edge: should we continue calling tools? ---
     def should_continue(state: dict) -> str:
-        messages = state.get("messages", [])
-        last_message = messages[-1]
-        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        messages: list[AnyMessage] = state.get("messages", [])
+        iteration: int = state.get("iteration_count", 0)
+
+        # Enforce iteration limit to prevent infinite loops.
+        if iteration >= max_iterations:
+            logger.warning(
+                "%s: hit max iterations (%d), stopping",
+                agent_name,
+                max_iterations,
+            )
+            return END
+
+        last_message = messages[-1] if messages else None
+        if (
+            last_message is not None
+            and hasattr(last_message, "tool_calls")
+            and last_message.tool_calls
+        ):
             return "tool_node"
         return END
 

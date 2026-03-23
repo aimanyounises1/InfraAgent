@@ -1,4 +1,4 @@
-"""Incident Response MCP Server — FastMCP entry point.
+"""Incident Response MCP Server -- FastMCP entry point.
 
 Run standalone:
     python -m mcp_servers.incident_mcp.server
@@ -10,6 +10,7 @@ mcp = FastMCP("incident_mcp")
 
 # --- Tool imports (must come after mcp is created) ---
 from mcp_servers.incident_mcp.tools import (  # noqa: E402, F401
+    correlation,
     grafana_tools,
     jira_tools,
     pagerduty_tools,

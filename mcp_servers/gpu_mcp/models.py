@@ -1,9 +1,7 @@
 """Pydantic input/output models for gpu_mcp tools."""
 
-from typing import Optional
 
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Basic GPU queries (NVML)
@@ -50,7 +48,7 @@ class DcgmFieldGroupInput(BaseModel):
 class DcgmXidErrorsInput(BaseModel):
     """Query XID error history from DCGM."""
 
-    device_index: Optional[int] = Field(
+    device_index: int | None = Field(
         default=None,
         ge=0,
         description="GPU device index (None for all devices)",
@@ -96,7 +94,7 @@ class NcclProfileInput(BaseModel):
         le=256,
         description="Number of GPUs for the collective (2-256)",
     )
-    message_size_mb: Optional[int] = Field(
+    message_size_mb: int | None = Field(
         default=None,
         ge=1,
         le=4096,

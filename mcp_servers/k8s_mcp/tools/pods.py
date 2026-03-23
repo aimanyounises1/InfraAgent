@@ -39,22 +39,14 @@ def _serialize_pod(pod: Any) -> dict[str, Any]:
             if cs.state:
                 if cs.state.running:
                     container_info["state"] = "running"
-                    container_info["started_at"] = str(
-                        cs.state.running.started_at
-                    )
+                    container_info["started_at"] = str(cs.state.running.started_at)
                 elif cs.state.waiting:
                     container_info["state"] = "waiting"
-                    container_info["reason"] = (
-                        cs.state.waiting.reason or ""
-                    )
+                    container_info["reason"] = cs.state.waiting.reason or ""
                 elif cs.state.terminated:
                     container_info["state"] = "terminated"
-                    container_info["reason"] = (
-                        cs.state.terminated.reason or ""
-                    )
-                    container_info["exit_code"] = (
-                        cs.state.terminated.exit_code
-                    )
+                    container_info["reason"] = cs.state.terminated.reason or ""
+                    container_info["exit_code"] = cs.state.terminated.exit_code
             containers.append(container_info)
 
     return {
@@ -66,9 +58,7 @@ def _serialize_pod(pod: Any) -> dict[str, Any]:
         "labels": pod.metadata.labels or {},
         "containers": containers,
         "start_time": (
-            str(pod.status.start_time)
-            if pod.status and pod.status.start_time
-            else None
+            str(pod.status.start_time) if pod.status and pod.status.start_time else None
         ),
     }
 
@@ -126,22 +116,15 @@ async def k8s_list_pods(params: K8sListPodsInput) -> str:
             "pod_count": len(pods),
             "pods": pods,
         }
-        logger.info(
-            "k8s_list_pods completed", extra={"pod_count": len(pods)}
-        )
+        logger.info("k8s_list_pods completed", extra={"pod_count": len(pods)})
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(
-            "k8s_list_pods error", extra={"error": str(e)}
-        )
+        logger.error("k8s_list_pods error", extra={"error": str(e)})
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    f"Failed to list pods in namespace "
-                    f"'{params.namespace}'"
-                ),
+                "details": (f"Failed to list pods in namespace '{params.namespace}'"),
             },
             indent=2,
         )
@@ -199,26 +182,30 @@ async def k8s_describe_pod(params: K8sDescribePodInput) -> str:
         conditions: list[dict[str, Any]] = []
         if pod.status and pod.status.conditions:
             for c in pod.status.conditions:
-                conditions.append({
-                    "type": c.type,
-                    "status": c.status,
-                    "reason": c.reason or "",
-                    "message": c.message or "",
-                    "last_transition": str(c.last_transition_time),
-                })
+                conditions.append(
+                    {
+                        "type": c.type,
+                        "status": c.status,
+                        "reason": c.reason or "",
+                        "message": c.message or "",
+                        "last_transition": str(c.last_transition_time),
+                    }
+                )
         pod_data["conditions"] = conditions
 
         # Add events
         events: list[dict[str, Any]] = []
         for ev in events_response.items:
-            events.append({
-                "type": ev.type,
-                "reason": ev.reason,
-                "message": ev.message,
-                "count": ev.count,
-                "first_seen": str(ev.first_timestamp),
-                "last_seen": str(ev.last_timestamp),
-            })
+            events.append(
+                {
+                    "type": ev.type,
+                    "reason": ev.reason,
+                    "message": ev.message,
+                    "count": ev.count,
+                    "first_seen": str(ev.first_timestamp),
+                    "last_seen": str(ev.last_timestamp),
+                }
+            )
         pod_data["events"] = events
 
         logger.info(
@@ -228,15 +215,11 @@ async def k8s_describe_pod(params: K8sDescribePodInput) -> str:
         return _format_pod_detail_markdown(pod_data)
 
     except Exception as e:
-        logger.error(
-            "k8s_describe_pod error", extra={"error": str(e)}
-        )
+        logger.error("k8s_describe_pod error", extra={"error": str(e)})
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    f"Failed to describe pod '{params.pod_name}'"
-                ),
+                "details": (f"Failed to describe pod '{params.pod_name}'"),
             },
             indent=2,
         )
@@ -278,9 +261,7 @@ def _format_pod_detail_markdown(pod: dict[str, Any]) -> str:
             lines.append(f"- **Image:** {c.get('image', 'N/A')}")
             lines.append(f"- **Ready:** {c.get('ready', 'N/A')}")
             lines.append(f"- **State:** {c.get('state', 'N/A')}")
-            lines.append(
-                f"- **Restart Count:** {c.get('restart_count', 0)}"
-            )
+            lines.append(f"- **Restart Count:** {c.get('restart_count', 0)}")
             if c.get("reason"):
                 lines.append(f"- **Reason:** {c['reason']}")
             if c.get("started_at"):
@@ -306,9 +287,7 @@ def _format_pod_detail_markdown(pod: dict[str, Any]) -> str:
             ev_type = ev.get("type", "Normal")
             reason = ev.get("reason", "")
             message = ev.get("message", "")
-            lines.append(
-                f"- **[{ev_type}]** {reason}: {message} (x{count})"
-            )
+            lines.append(f"- **[{ev_type}]** {reason}: {message} (x{count})")
 
     return "\n".join(lines)
 
@@ -382,16 +361,11 @@ async def k8s_exec_command(params: K8sExecCommandInput) -> str:
         return json.dumps(result, indent=2, default=str)
 
     except Exception as e:
-        logger.error(
-            "k8s_exec_command error", extra={"error": str(e)}
-        )
+        logger.error("k8s_exec_command error", extra={"error": str(e)})
         return json.dumps(
             {
                 "error": f"K8s API error: {e}",
-                "details": (
-                    f"Failed to exec command in pod "
-                    f"'{params.pod_name}'"
-                ),
+                "details": (f"Failed to exec command in pod '{params.pod_name}'"),
             },
             indent=2,
         )

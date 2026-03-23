@@ -12,7 +12,6 @@ on platform_detect results.
 from __future__ import annotations
 
 import logging
-import os
 import platform as _platform
 from dataclasses import dataclass
 from typing import Any

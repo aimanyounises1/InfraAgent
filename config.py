@@ -88,6 +88,34 @@ class Settings(BaseSettings):
     llm_analysis_timeout: int = 120  # seconds
     llm_analysis_max_data_chars: int = 4000
 
+    # --- ReAct Engine ---
+    react_max_iterations: int = 15
+    react_step_timeout: int = 30  # seconds per tool step
+    react_planning_enabled: bool = True  # False = legacy keyword routing
+
+    # --- Approval Workflow ---
+    approval_timeout: int = 300  # seconds to wait for human approval
+    approval_required_for_destructive: bool = True
+
+    # --- Conversation Memory ---
+    memory_max_turns: int = 10
+
+    # --- API Security ---
+    auth_enabled: bool = False
+    api_keys: str = ""  # comma-separated API keys
+    rate_limit_rpm: int = 60
+
+    # --- Runbooks ---
+    runbook_dir: str = "runbooks"
+
+    # --- Audit ---
+    audit_log_file: str = "audit.log"
+    audit_enabled: bool = True
+
+    # --- Classification ---
+    classification_confidence_threshold: float = 0.3
+    classification_use_llm: bool = True
+
     model_config = {
         "env_prefix": "INFRA_AGENT_",
         "env_file": ".env",
