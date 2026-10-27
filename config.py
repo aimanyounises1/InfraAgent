@@ -93,7 +93,11 @@ class Settings(BaseSettings):
     react_step_timeout: int = 30  # seconds per tool step
     react_planning_enabled: bool = True  # False = legacy keyword routing
 
-    # --- Approval Workflow ---
+    # --- Tool execution policy ---
+    # Opt-in for trusted local environments; not per-action human approval.
+    allow_mutations: bool = False
+
+    # Legacy placeholders; no approval workflow is implemented.
     approval_timeout: int = 300  # seconds to wait for human approval
     approval_required_for_destructive: bool = True
 

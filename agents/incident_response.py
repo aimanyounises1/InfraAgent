@@ -323,7 +323,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
         results["create_ticket"] = result_str
         tools_called.append("incident_jira_create_ticket")
         actions.append(
-            f"incident_response_agent: created Jira ticket in {project_key}"
+            f"incident_response_agent: Jira ticket creation requested in {project_key}"
         )
 
     # --- Search Jira ---
@@ -383,7 +383,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
             results["acknowledge"] = result_str
             tools_called.append("incident_pagerduty_acknowledge")
             actions.append(
-                f"incident_response_agent: acknowledged incident "
+                f"incident_response_agent: acknowledgement requested for incident "
                 f"{incident_id}"
             )
         else:
@@ -416,7 +416,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
             results["resolve"] = result_str
             tools_called.append("incident_pagerduty_resolve")
             actions.append(
-                f"incident_response_agent: resolved incident {incident_id}"
+                f"incident_response_agent: resolution requested for incident {incident_id}"
             )
         else:
             actions.append(

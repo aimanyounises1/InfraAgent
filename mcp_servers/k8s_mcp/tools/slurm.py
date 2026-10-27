@@ -27,6 +27,7 @@ from mcp_servers.k8s_mcp.models import (  # noqa: TCH001
     SlurmSubmitJobInput,
 )
 from mcp_servers.k8s_mcp.server import mcp
+from mcp_servers.policy import blocked_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +471,8 @@ async def k8s_slurm_submit_job(params: SlurmSubmitJobInput) -> str:
     assigned job ID on success.
     Requires Slurm (sbatch) to be installed and accessible.
     """
+    if blocked := blocked_mutation("k8s_slurm_submit_job"):
+        return blocked
     logger.debug(
         "k8s_slurm_submit_job called",
         extra={
@@ -521,6 +524,8 @@ async def k8s_slurm_cancel_job(params: SlurmCancelJobInput) -> str:
 
     Requires Slurm (scancel) to be installed and accessible.
     """
+    if blocked := blocked_mutation("k8s_slurm_cancel_job"):
+        return blocked
     logger.debug(
         "k8s_slurm_cancel_job called",
         extra={"job_id": params.job_id},
