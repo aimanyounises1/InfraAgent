@@ -17,6 +17,7 @@ from mcp_servers.incident_mcp.models import (
 )
 from mcp_servers.incident_mcp.server import mcp
 from mcp_servers.incident_mcp.utils import JiraUnavailableError, get_jira_client
+from mcp_servers.policy import blocked_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,8 @@ def _jira_unavailable_response(exc: JiraUnavailableError) -> str:
 )
 async def incident_jira_create_ticket(params: JiraCreateTicketInput) -> str:
     """Create a Jira incident ticket with summary, description, and priority."""
+    if blocked := blocked_mutation("incident_jira_create_ticket"):
+        return blocked
     logger.info(
         "incident_jira_create_ticket called",
         extra={"project_key": params.project_key, "summary": params.summary},
@@ -193,6 +196,8 @@ async def incident_jira_search(params: JiraSearchInput) -> str:
 )
 async def incident_jira_update_ticket(params: JiraUpdateTicketInput) -> str:
     """Update a Jira ticket's status, assignee, or add a comment."""
+    if blocked := blocked_mutation("incident_jira_update_ticket"):
+        return blocked
     logger.info(
         "incident_jira_update_ticket called",
         extra={"issue_key": params.issue_key},

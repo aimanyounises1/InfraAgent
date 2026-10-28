@@ -79,17 +79,17 @@ def build_tool_agent(
     sys_msg = SystemMessage(content=system_prompt)
 
     # --- Node: call the LLM (async) ---
-    async def llm_call(state: dict) -> dict:
-        messages: list[AnyMessage] = state.get("messages", [])
+    async def llm_call(state: AgentState) -> dict:
+        messages: list[AnyMessage] = state.messages
         response = await model_with_tools.ainvoke([sys_msg] + messages)
         return {
             "messages": [response],
-            "iteration_count": state.get("iteration_count", 0) + 1,
+            "iteration_count": state.iteration_count + 1,
         }
 
     # --- Node: execute tool calls (async with timeout) ---
-    async def tool_node(state: dict) -> dict:
-        messages: list[AnyMessage] = state.get("messages", [])
+    async def tool_node(state: AgentState) -> dict:
+        messages: list[AnyMessage] = state.messages
         last_message = messages[-1]
         results: list[ToolMessage] = []
 
@@ -143,9 +143,9 @@ def build_tool_agent(
         return {"messages": results}
 
     # --- Edge: should we continue calling tools? ---
-    def should_continue(state: dict) -> str:
-        messages: list[AnyMessage] = state.get("messages", [])
-        iteration: int = state.get("iteration_count", 0)
+    def should_continue(state: AgentState) -> str:
+        messages: list[AnyMessage] = state.messages
+        iteration: int = state.iteration_count
 
         # Enforce iteration limit to prevent infinite loops.
         if iteration >= max_iterations:

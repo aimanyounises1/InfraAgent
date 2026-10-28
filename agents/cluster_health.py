@@ -281,7 +281,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
             results["scale_deployment"] = result_str
             tools_called.append("k8s_scale_deployment")
             actions.append(
-                f"cluster_health_agent: scaled {deploy_name} to {replicas} replicas"
+                f"cluster_health_agent: scale requested for {deploy_name} to {replicas} replicas"
             )
         else:
             actions.append(
@@ -315,7 +315,7 @@ async def _run_keyword_dispatch(query: str) -> dict[str, Any]:
             results["restart_deployment"] = result_str
             tools_called.append("k8s_restart_deployment")
             actions.append(
-                f"cluster_health_agent: restarted deployment {deploy_name}"
+                f"cluster_health_agent: restart requested for deployment {deploy_name}"
             )
         else:
             actions.append(

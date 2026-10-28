@@ -1,0 +1,5 @@
+# Configuration and fixed protocol values are intentional. No secrets belong here.
+--host 127.0.0.1 | README local-only launch example explicitly binds the loopback interface.
+http://127.0.0.1:8000 | README documents the existing backend development endpoint.
+http://localhost:3000 | Existing dashboard dev endpoint and CORS configuration, documented for reproducibility.
+https://github.com/aimanyounises1/InfraAgent | Canonical source repository URL in setup documentation.

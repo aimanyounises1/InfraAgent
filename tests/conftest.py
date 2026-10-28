@@ -2,9 +2,32 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture
+def allow_mutations():
+    """Opt in only for tests exercising mocked external mutation contracts."""
+    with patch("config.settings.allow_mutations", True):
+        yield
+
+
+@pytest.fixture
+def keyword_dispatch_only():
+    """Isolate keyword/API unit tests from optional live model inference.
+
+    The actual model-tool graph is exercised separately with a scripted model in
+    test_mutation_policy.py. Keyword tests must always exercise their named path.
+    """
+    with ExitStack() as stack:
+        for domain in ("cluster_health", "gpu_workload", "incident_response"):
+            stack.enter_context(patch(
+                f"agents.{domain}._run_llm_agent", new_callable=AsyncMock, return_value=None,
+            ))
+        yield
 
 # ---------------------------------------------------------------------------
 # LLM Analysis Mock (autouse -- prevents real Ollama calls in tests)
@@ -161,7 +184,7 @@ def mock_httpx_client():
 
 
 @pytest.fixture
-def api_client():
+def api_client(keyword_dispatch_only):
     """FastAPI TestClient fixture.
 
     Usage: response = api_client.get("/healthz")

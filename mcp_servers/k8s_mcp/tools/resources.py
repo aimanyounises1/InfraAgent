@@ -27,6 +27,7 @@ from mcp_servers.k8s_mcp.utils import (
     get_autoscaling_client,
     get_clients,
 )
+from mcp_servers.policy import blocked_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,8 @@ async def k8s_get_node_status(params: K8sGetNodeStatusInput) -> str:
 )
 async def k8s_cordon_node(params: K8sCordonNodeInput) -> str:
     """Mark a node as unschedulable (cordon)."""
+    if blocked := blocked_mutation("k8s_cordon_node"):
+        return blocked
     logger.debug("k8s_cordon_node called", extra={"node_name": params.node_name})
 
     try:
@@ -321,6 +324,8 @@ async def k8s_cordon_node(params: K8sCordonNodeInput) -> str:
 )
 async def k8s_uncordon_node(params: K8sCordonNodeInput) -> str:
     """Mark a node as schedulable again (uncordon)."""
+    if blocked := blocked_mutation("k8s_uncordon_node"):
+        return blocked
     logger.debug("k8s_uncordon_node called", extra={"node_name": params.node_name})
 
     try:
@@ -372,6 +377,8 @@ async def k8s_drain_node(params: K8sDrainNodeInput) -> str:
     Cordons the node first, then evicts pods via the Eviction API.
     DaemonSet-managed pods and mirror pods are skipped.
     """
+    if blocked := blocked_mutation("k8s_drain_node"):
+        return blocked
     logger.debug(
         "k8s_drain_node called",
         extra={
@@ -607,6 +614,8 @@ async def k8s_rollback_deployment(params: K8sRollbackDeploymentInput) -> str:
     if no revision is specified) and patches the deployment's pod template
     to match, triggering a rollback.
     """
+    if blocked := blocked_mutation("k8s_rollback_deployment"):
+        return blocked
     logger.debug(
         "k8s_rollback_deployment called",
         extra={

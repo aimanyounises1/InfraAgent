@@ -15,6 +15,7 @@ from mcp_servers.k8s_mcp.models import (  # noqa: TCH001
 )
 from mcp_servers.k8s_mcp.server import mcp
 from mcp_servers.k8s_mcp.utils import K8sUnavailableError, get_clients
+from mcp_servers.policy import blocked_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,8 @@ async def k8s_scale_deployment(
     params: K8sScaleDeploymentInput,
 ) -> str:
     """Scale a deployment to the specified number of replicas."""
+    if blocked := blocked_mutation("k8s_scale_deployment"):
+        return blocked
     logger.debug(
         "k8s_scale_deployment called",
         extra={
@@ -236,6 +239,8 @@ async def k8s_restart_deployment(
     params: K8sRestartDeploymentInput,
 ) -> str:
     """Perform a rolling restart of a deployment."""
+    if blocked := blocked_mutation("k8s_restart_deployment"):
+        return blocked
     logger.debug(
         "k8s_restart_deployment called",
         extra={

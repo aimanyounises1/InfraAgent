@@ -20,6 +20,7 @@ from mcp_servers.incident_mcp.utils import (
     PagerDutyUnavailableError,
     get_pagerduty_client,
 )
+from mcp_servers.policy import blocked_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,8 @@ async def incident_pagerduty_acknowledge(
     params: PagerDutyAcknowledgeInput,
 ) -> str:
     """Acknowledge a PagerDuty incident."""
+    if blocked := blocked_mutation("incident_pagerduty_acknowledge"):
+        return blocked
     logger.info(
         "incident_pagerduty_acknowledge called",
         extra={"incident_id": params.incident_id},
@@ -205,6 +208,8 @@ async def incident_pagerduty_acknowledge(
 )
 async def incident_pagerduty_resolve(params: PagerDutyResolveInput) -> str:
     """Resolve a PagerDuty incident."""
+    if blocked := blocked_mutation("incident_pagerduty_resolve"):
+        return blocked
     logger.info(
         "incident_pagerduty_resolve called",
         extra={"incident_id": params.incident_id},

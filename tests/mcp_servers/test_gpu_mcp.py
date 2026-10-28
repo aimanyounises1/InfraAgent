@@ -1,22 +1,19 @@
-"""Tests for gpu_mcp server tools.
+"""Hardware-independent tests for normalized GPU utilities and MCP adapters.
 
-Tests are split into two groups:
-
-1. **Live backend tests** -- run against whatever GPU backend is detected
-   on the current system (apple_metal on macOS, nvml on NVIDIA, none otherwise).
-   These verify the full tool pipeline with real hardware queries.
-
-2. **No-GPU error path tests** -- patch ``_BACKEND`` to "none" and verify
-   that tools return proper error JSON instead of crashing.
+NVIDIA and Apple backends use controlled readings at the hardware boundary.
+Explicit no-GPU cases verify disconnected responses. No test requires a driver,
+GPU, live process inspection, or collection-time skip.
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from mcp_servers.gpu_mcp import utils
 from mcp_servers.gpu_mcp.models import (
     GpuClusterSummaryInput,
     GpuDeviceIndexInput,
@@ -32,13 +29,63 @@ from mcp_servers.gpu_mcp.utils import (
     get_processes,
 )
 
+
+@pytest.fixture(autouse=True, params=["nvml", "apple_metal"])
+def controlled_gpu_backend(request):
+    """Exercise real normalization/adapter logic without touching GPU hardware.
+
+    Stub only hardware-specific count/info/process operations. Public validation,
+    health classification, serialization, and asynchronous adapter code stay real.
+    """
+    backend = request.param
+    readings = [
+        GpuInfo(
+            name="Controlled device A",
+            total_memory_mb=8192,
+            temperature=60,
+            gpu_utilization=40,
+            memory_utilization=25,
+            power_draw_w=50.0,
+            power_limit_w=100.0,
+            driver_version="unit-test",
+            backend=backend,
+        ),
+        GpuInfo(
+            name="Controlled device B",
+            total_memory_mb=16384,
+            temperature=86,
+            gpu_utilization=70,
+            memory_utilization=50,
+            power_draw_w=75.0,
+            power_limit_w=150.0,
+            driver_version="unit-test",
+            backend=backend,
+        ),
+    ]
+    processes = [{"pid": 123, "name": "controlled-worker", "memory_mb": 128, "type": "Compute"}]
+    nvml = MagicMock()
+    nvml.nvmlDeviceGetCurrentEccMode.return_value = 0
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(utils, "_BACKEND", backend))
+        stack.enter_context(patch.object(utils, "_pynvml", nvml))
+        for prefix in ("_nvml", "_apple"):
+            stack.enter_context(
+                patch.object(utils, f"{prefix}_device_count", return_value=len(readings))
+            )
+            stack.enter_context(
+                patch.object(utils, f"{prefix}_gpu_info", side_effect=readings.__getitem__)
+            )
+            stack.enter_context(patch.object(utils, f"{prefix}_processes", return_value=processes))
+        yield
+
+
 # ---------------------------------------------------------------------------
-# Utils tests (live backend)
+# Utils tests (controlled backend)
 # ---------------------------------------------------------------------------
 
 
 class TestGpuUtils:
-    """Tests for gpu_mcp utility functions against the live backend."""
+    """Tests for GPU utility dispatch and validation with controlled backends."""
 
     def test_get_backend_returns_valid_string(self) -> None:
         """Backend should be one of the known values."""
@@ -50,10 +97,6 @@ class TestGpuUtils:
         count = get_gpu_count()
         assert count >= 0
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     def test_get_gpu_info_returns_gpu_info(self) -> None:
         """get_gpu_info(0) should return a valid GpuInfo dataclass."""
         info = get_gpu_info(0)
@@ -63,20 +106,12 @@ class TestGpuUtils:
         assert info.power_limit_w > 0
         assert info.backend == get_backend()
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     def test_get_gpu_info_has_name(self) -> None:
         """Device should have a non-empty name string."""
         info = get_gpu_info(0)
         assert isinstance(info.name, str)
         assert len(info.name) > 0
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     def test_get_gpu_info_out_of_range(self) -> None:
         """Out-of-range index should raise ValueError."""
         with pytest.raises(ValueError, match="out of range"):
@@ -93,10 +128,6 @@ class TestGpuUtils:
             with pytest.raises(RuntimeError, match="No GPU hardware"):
                 _get_info(0)
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     def test_get_processes_returns_list(self) -> None:
         """get_processes should return a list of process dicts."""
         procs = get_processes(0)
@@ -107,10 +138,6 @@ class TestGpuUtils:
             assert "memory_mb" in proc
             assert "type" in proc
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     def test_get_health_returns_dict(self) -> None:
         """get_health should return a valid health dict."""
         health = get_health(0)
@@ -122,10 +149,6 @@ class TestGpuUtils:
         assert "memory_total_mb" in health
         assert health["backend"] == get_backend()
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     def test_get_health_throttle_flag(self) -> None:
         """throttle_warning should be True only when temp > 85."""
         health = get_health(0)
@@ -136,7 +159,7 @@ class TestGpuUtils:
 
 
 # ---------------------------------------------------------------------------
-# Monitor tool tests (live backend)
+# Monitor tool tests (controlled backend)
 # ---------------------------------------------------------------------------
 
 
@@ -145,7 +168,7 @@ class TestGpuListDevices:
 
     @pytest.mark.asyncio
     async def test_list_devices_returns_data(self) -> None:
-        """Should return device data matching the current backend."""
+        """Should return device data matching the controlled backend."""
         from mcp_servers.gpu_mcp.tools.monitor import gpu_list_devices
 
         result = await gpu_list_devices(GpuListDevicesInput())
@@ -166,10 +189,6 @@ class TestGpuListDevices:
                 assert "driver_version" in device
                 assert "backend" in device
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_list_devices_backend_field(self) -> None:
         """Each device should report the correct backend."""
@@ -185,10 +204,6 @@ class TestGpuListDevices:
 class TestGpuGetUtilization:
     """Tests for gpu_get_utilization tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_get_utilization(self) -> None:
         """Should return utilization percentage."""
@@ -210,10 +225,6 @@ class TestGpuGetUtilization:
         data = json.loads(result)
         assert "error" in data
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_get_utilization_device_index_in_response(self) -> None:
         """Response should include the requested device index."""
@@ -227,10 +238,6 @@ class TestGpuGetUtilization:
 class TestGpuGetMemory:
     """Tests for gpu_get_memory tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_get_memory(self) -> None:
         """Should return memory info with total, used, free."""
@@ -257,10 +264,6 @@ class TestGpuGetMemory:
 class TestGpuGetTemperature:
     """Tests for gpu_get_temperature tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_get_temperature(self) -> None:
         """Should return temperature with throttle status."""
@@ -286,10 +289,6 @@ class TestGpuGetTemperature:
 class TestGpuGetPower:
     """Tests for gpu_get_power tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_get_power(self) -> None:
         """Should return power draw and limit."""
@@ -314,10 +313,6 @@ class TestGpuGetPower:
 class TestGpuClusterSummary:
     """Tests for gpu_get_cluster_summary tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_cluster_summary(self) -> None:
         """Should return aggregated cluster stats."""
@@ -337,10 +332,6 @@ class TestGpuClusterSummary:
         assert "devices" in data
         assert len(data["devices"]) == count
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_cluster_summary_memory_consistency(self) -> None:
         """Total memory should equal used + free."""
@@ -366,17 +357,13 @@ class TestGpuClusterSummary:
 
 
 # ---------------------------------------------------------------------------
-# Process tool tests (live backend)
+# Process tool tests (controlled backend)
 # ---------------------------------------------------------------------------
 
 
 class TestGpuListProcesses:
     """Tests for gpu_list_processes tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_list_processes(self) -> None:
         """Should return processes for a given device."""
@@ -390,42 +377,47 @@ class TestGpuListProcesses:
         assert data["process_count"] == len(data["processes"])
         assert "backend" in data
 
+    @pytest.mark.parametrize("device_index", [2, 99])
     @pytest.mark.asyncio
-    async def test_list_processes_invalid_device(self) -> None:
-        """Should return error for invalid device index."""
+    async def test_list_processes_invalid_device(self, device_index: int) -> None:
+        """A known device count rejects its first invalid index and larger indices."""
         from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
-        result = await gpu_list_processes(GpuDeviceIndexInput(device_index=99))
+        with patch("mcp_servers.gpu_mcp.tools.processes.get_processes") as query_processes:
+            result = await gpu_list_processes(GpuDeviceIndexInput(device_index=device_index))
+        query_processes.assert_not_called()
         data = json.loads(result)
         assert "error" in data
 
+    @pytest.mark.parametrize("device_index", [0, 99])
     @pytest.mark.asyncio
-    async def test_list_processes_no_gpu(self) -> None:
-        """With no GPU backend, should return empty process list."""
+    async def test_list_processes_no_gpu(self, device_index: int) -> None:
+        """Absent hardware returns a labeled empty list, independent of requested index."""
         with (
             patch("mcp_servers.gpu_mcp.tools.processes.get_gpu_count", return_value=0),
             patch("mcp_servers.gpu_mcp.tools.processes.get_backend", return_value="none"),
+            patch("mcp_servers.gpu_mcp.tools.processes.get_processes") as query_processes,
         ):
             from mcp_servers.gpu_mcp.tools.processes import gpu_list_processes
 
-            result = await gpu_list_processes(GpuDeviceIndexInput(device_index=0))
+            result = await gpu_list_processes(GpuDeviceIndexInput(device_index=device_index))
             data = json.loads(result)
             assert data["process_count"] == 0
             assert data["processes"] == []
+            assert data["backend"] == "none"
+            assert data["device_index"] == device_index
+            assert data["message"] == "No GPU hardware detected."
+            query_processes.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Health check tool tests (live backend)
+# Health check tool tests (controlled backend)
 # ---------------------------------------------------------------------------
 
 
 class TestGpuHealthCheck:
     """Tests for gpu_health_check tool."""
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_health_check(self) -> None:
         """Should return a comprehensive health report."""
@@ -440,10 +432,6 @@ class TestGpuHealthCheck:
         assert "summary" in data
         assert "devices" in data
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_health_check_summary_counts(self) -> None:
         """Summary counts should add up to total device count."""
@@ -455,10 +443,6 @@ class TestGpuHealthCheck:
         total = summary["healthy"] + summary["warning"] + summary["critical"]
         assert total == data["device_count"]
 
-    @pytest.mark.skipif(
-        get_backend() == "none",
-        reason="No GPU backend available",
-    )
     @pytest.mark.asyncio
     async def test_health_check_device_fields(self) -> None:
         """Each device in the report should have required fields."""

@@ -277,6 +277,7 @@ class TestK8sDescribePod:
             K8sDescribePodInput(pod_name="")
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestK8sExecCommand:
     """Tests for k8s_exec_command tool."""
 
@@ -419,6 +420,7 @@ class TestK8sListDeployments:
         )
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestK8sScaleDeployment:
     """Tests for k8s_scale_deployment tool."""
 
@@ -484,6 +486,7 @@ class TestK8sScaleDeployment:
             )
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestK8sRestartDeployment:
     """Tests for k8s_restart_deployment tool."""
 

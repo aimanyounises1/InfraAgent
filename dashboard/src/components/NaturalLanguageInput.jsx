@@ -613,7 +613,7 @@ export default function NaturalLanguageInput() {
               InfraAgent Chat
             </h2>
             <p className="text-[11px] text-gray-500 font-mono leading-tight mt-0.5">
-              Powered by NVIDIA Nemotron via Ollama
+              Infrastructure assistant
             </p>
           </div>
         </div>

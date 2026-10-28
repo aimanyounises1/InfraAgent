@@ -14,6 +14,7 @@ from mcp_servers.k8s_mcp.models import (  # noqa: TCH001
 )
 from mcp_servers.k8s_mcp.server import mcp
 from mcp_servers.k8s_mcp.utils import K8sUnavailableError, get_clients
+from mcp_servers.policy import blocked_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,8 @@ def _format_pod_detail_markdown(pod: dict[str, Any]) -> str:
 )
 async def k8s_exec_command(params: K8sExecCommandInput) -> str:
     """Execute a command inside a pod container."""
+    if blocked := blocked_mutation("k8s_exec_command"):
+        return blocked
     logger.debug(
         "k8s_exec_command called",
         extra={

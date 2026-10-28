@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("keyword_dispatch_only")
+
 # ---------------------------------------------------------------------------
 # Cluster Health Agent Tests
 # ---------------------------------------------------------------------------

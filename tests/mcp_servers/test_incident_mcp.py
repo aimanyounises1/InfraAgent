@@ -129,6 +129,7 @@ class TestClientFactories:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestJiraCreateTicket:
     """Tests for incident_jira_create_ticket tool."""
 
@@ -245,6 +246,7 @@ class TestJiraSearch:
             JiraSearchInput(jql="")
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestJiraUpdateTicket:
     """Tests for incident_jira_update_ticket tool."""
 
@@ -508,6 +510,7 @@ class TestPagerDutyListIncidents:
             assert data["incidents"][0]["id"] == "P1ABC"
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestPagerDutyAcknowledge:
     """Tests for incident_pagerduty_acknowledge tool."""
 
@@ -546,6 +549,7 @@ class TestPagerDutyAcknowledge:
             PagerDutyAcknowledgeInput(incident_id="")
 
 
+@pytest.mark.usefixtures("allow_mutations")
 class TestPagerDutyResolve:
     """Tests for incident_pagerduty_resolve tool."""
 
