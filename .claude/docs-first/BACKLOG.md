@@ -1,5 +1,10 @@
 # Scoped delivery
 
+- [x] Finish the verified review feedback for credential-free CI checkout and complete standalone-server commands.
+  - Definition of done: `sh .claude/docs-first/verify.sh` and inspect the checkout input against the official versioned action metadata.
+  - Libraries: actions/checkout v4; no application API changes.
+  - Sources: official action metadata recorded in EVIDENCE.md; existing adapter server modules.
+
 - [x] Enforce the local mutation opt-in at each callable tool boundary, document actual behavior, and verify distributable setup.
   - Definition of done: `sh .claude/docs-first/verify.sh`
   - Libraries: Python stdlib, pydantic-settings 2.13.1, MCP SDK 1.26.0, pytest 9.0.2, LangChain Core 1.2.20; setuptools for wheel packaging.

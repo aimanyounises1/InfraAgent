@@ -108,7 +108,7 @@ runbooks/             Incident investigation references
 tests/                Mocked adapter tests and execution-policy regressions
 ```
 
-Agents call adapter functions in the same process. Each adapter server can also run independently with `python -m mcp_servers.k8s_mcp.server` (or `gpu_mcp.server`, `incident_mcp.server`) through the MCP SDK's default stdio transport. The web application does not require those servers to be started separately.
+Agents call adapter functions in the same process. Each adapter server can also run independently with `python -m mcp_servers.k8s_mcp.server` (or `mcp_servers.gpu_mcp.server`, `mcp_servers.incident_mcp.server`) through the MCP SDK's default stdio transport. The web application does not require those servers to be started separately.
 
 ## Scope and contribution
 
